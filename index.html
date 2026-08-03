@@ -433,7 +433,17 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
 // Anonymous auth just to satisfy "request.auth != null" in DB rules.
-firebase.auth().signInAnonymously().catch(err => console.error('Anon auth failed', err));
+// IMPORTANT: don't attach any db listeners until we KNOW we're signed in —
+// otherwise the very first read gets permission-denied and never retries.
+firebase.auth().onAuthStateChanged(user => {
+  if (user) {
+    attachListeners();
+  }
+});
+firebase.auth().signInAnonymously().catch(err => {
+  console.error('Anon auth failed', err);
+  alert('Could not sign in to Firebase: ' + err.message + '\n\nCheck that Anonymous sign-in is enabled under Firebase Console → Authentication → Sign-in method, and that this domain is listed under Authentication → Settings → Authorized domains.');
+});
 
 // CHANGE THIS before going live with real doctors.
 const ADMIN_PASSCODE = "SanteAdmin@2026";
@@ -1055,7 +1065,8 @@ function renderDocLedger(){
 /* ============================================================
    INIT
 ============================================================ */
-attachListeners();
+// attachListeners() is now called from onAuthStateChanged above, once we're
+// actually signed in — see FIREBASE INIT section.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
