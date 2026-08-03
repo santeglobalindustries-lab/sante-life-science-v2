@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sante Life Science</title>
+
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0A0908">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sante Kit Desk">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="icon" href="./icons/icon-192.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<style>
+  :root{
+    --bg:#0A0908; --bg2:#141210; --bg3:#1C1916;
+    --line:#2E2A24; --line-soft:#211E1A;
+    --cream:#F2ECE1; --cream-dim:#B3A996; --cream-faint:#75705F;
+    --amber:#C89B5C; --amber-bright:#E4BA80; --rust:#B5654A; --sage:#8DA283;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html, body{ height:100%; }
+  body{
+    background:var(--bg); color:var(--cream); font-family:'Outfit',sans-serif; font-weight:300;
+    min-height:100vh; -webkit-font-smoothing:antialiased;
+    padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+  }
+  .serif{font-family:'Cormorant Garamond',serif;}
+  .mono{font-family:'JetBrains Mono',monospace;}
+  a{color:inherit; text-decoration:none;}
+  button{font-family:'Outfit',sans-serif; cursor:pointer;}
+
+  #login-screen{
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:
+      radial-gradient(circle at 20% 20%, rgba(200,155,92,0.06), transparent 45%),
+      radial-gradient(circle at 80% 80%, rgba(181,101,74,0.05), transparent 45%),
+      var(--bg);
+    padding:24px;
+  }
+  .login-card{ width:100%; max-width:420px; border:1px solid var(--line); background:var(--bg2); padding:40px 32px; position:relative; }
+  .login-card::before{ content:''; position:absolute; top:10px; left:10px; right:10px; bottom:10px; border:1px solid var(--line-soft); pointer-events:none; }
+  .brand-mark{ font-size:12px; letter-spacing:0.28em; color:var(--amber); text-transform:uppercase; margin-bottom:6px; }
+  .brand-title{ font-family:'Cormorant Garamond',serif; font-size:32px; font-weight:500; color:var(--cream); margin-bottom:4px; }
+  .brand-sub{ color:var(--cream-faint); font-size:13px; margin-bottom:28px; line-height:1.5; }
+  .field{ margin-bottom:16px; }
+  .field label{ display:block; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--cream-faint); margin-bottom:7px; }
+  .field select, .field input{ width:100%; background:var(--bg3); border:1px solid var(--line); color:var(--cream); padding:11px 12px; font-size:15px; font-family:'Outfit',sans-serif; font-weight:300; }
+  .field select:focus, .field input:focus{ outline:none; border-color:var(--amber); }
+  .btn{ display:inline-flex; align-items:center; justify-content:center; gap:8px; background:var(--amber); color:#151009; border:none; padding:12px 20px; font-size:13px; letter-spacing:0.05em; text-transform:uppercase; font-weight:500; transition:background 0.15s ease; }
+  .btn:hover{ background:var(--amber-bright); }
+  .btn-outline{ background:transparent; border:1px solid var(--line); color:var(--cream-dim); }
+  .btn-outline:hover{ border-color:var(--amber); color:var(--amber-bright); background:transparent; }
+  .btn-sm{ padding:7px 12px; font-size:11px; }
+  .btn-block{ width:100%; margin-top:6px; }
+  .btn-rust{ background:var(--rust); color:#150c09; }
+  .btn-sage{ background:var(--sage); color:#0c130a; }
+  .btn:disabled{ opacity:0.35; cursor:not-allowed; }
+  .login-msg{ font-size:12.5px; margin-top:10px; min-height:18px; }
+  .login-msg.err{ color:var(--rust); }
+  .login-msg.ok{ color:var(--sage); }
+  .back-link{ font-size:12px; color:var(--cream-faint); display:inline-block; margin-top:16px; }
+  .back-link:hover{ color:var(--amber-bright); }
+  .hint{ font-size:11px; color:var(--cream-faint); line-height:1.6; margin-top:14px; }
+
+  #app{ display:none; min-height:100vh; }
+  .topbar{ display:flex; align-items:center; justify-content:space-between; padding:16px 28px; border-bottom:1px solid var(--line); background:var(--bg2); position:sticky; top:0; z-index:20; }
+  .topbar .brand{ display:flex; align-items:baseline; gap:10px; }
+  .topbar .brand .brand-title{ font-size:22px; margin-bottom:0; }
+  .topbar .brand .tag{ font-size:10px; letter-spacing:0.2em; color:var(--amber); text-transform:uppercase; }
+  .who{ display:flex; align-items:center; gap:14px; }
+  .who .name{ font-size:13px; color:var(--cream-dim); }
+  .who .role-chip{ font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:var(--amber); border:1px solid var(--line); padding:4px 9px; }
+
+  .shell{ display:flex; }
+  .sidebar{ width:220px; border-right:1px solid var(--line); background:var(--bg2); min-height:calc(100vh - 61px); padding:20px 0; flex-shrink:0; }
+  .nav-item{ display:block; width:100%; text-align:left; background:none; border:none; color:var(--cream-dim); padding:12px 26px; font-size:13px; letter-spacing:0.03em; border-left:2px solid transparent; }
+  .nav-item:hover{ color:var(--cream); background:var(--bg3); }
+  .nav-item.active{ color:var(--amber-bright); border-left-color:var(--amber); background:var(--bg3); }
+
+  .main{ flex:1; padding:32px 36px; max-width:1180px; }
+  .view{ display:none; }
+  .view.active{ display:block; animation:fadein 0.25s ease; }
+  @keyframes fadein{ from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+
+  .view-header{ margin-bottom:26px; }
+  .eyebrow{ font-size:11px; letter-spacing:0.18em; text-transform:uppercase; color:var(--amber); margin-bottom:6px;}
+  .view-title{ font-family:'Cormorant Garamond',serif; font-size:30px; font-weight:500; }
+  .view-desc{ color:var(--cream-faint); font-size:13px; margin-top:6px; }
+
+  .stat-row{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); margin-bottom:28px; }
+  .stat-card{ background:var(--bg2); padding:20px; }
+  .stat-card .label{ font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:var(--cream-faint); margin-bottom:8px;}
+  .stat-card .value{ font-family:'JetBrains Mono',monospace; font-size:24px; color:var(--cream); }
+  .stat-card .value.amber{ color:var(--amber-bright); }
+  .stat-card .value.sage{ color:var(--sage); }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:left; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--cream-faint); padding:10px 12px; border-bottom:1px solid var(--line); font-weight:400;}
+  td{ padding:12px; border-bottom:1px solid var(--line-soft); color:var(--cream-dim); vertical-align:middle;}
+  tr:hover td{ background:rgba(200,155,92,0.03); }
+  .num{ font-family:'JetBrains Mono',monospace; color:var(--cream); }
+  .table-wrap{ border:1px solid var(--line); background:var(--bg2); overflow-x:auto; }
+
+  .badge{ display:inline-block; font-size:10px; letter-spacing:0.06em; text-transform:uppercase; padding:3px 9px; border:1px solid var(--line); }
+  .badge.pending{ color:var(--amber-bright); border-color:var(--amber); }
+  .badge.confirmed{ color:var(--sage); border-color:var(--sage); }
+  .badge.paid{ color:var(--sage); border-color:var(--sage); background:rgba(141,162,131,0.08); }
+  .badge.due{ color:var(--rust); border-color:var(--rust); }
+  .badge.partial{ color:var(--amber-bright); border-color:var(--amber); }
+  .badge.bound{ color:var(--sage); border-color:var(--sage); }
+  .badge.unbound{ color:var(--rust); border-color:var(--rust); }
+
+  .panel{ border:1px solid var(--line); background:var(--bg2); padding:24px; margin-bottom:22px; }
+  .panel-title{ font-family:'Cormorant Garamond',serif; font-size:19px; margin-bottom:16px; color:var(--cream); }
+  .row{ display:flex; gap:14px; flex-wrap:wrap; }
+  .row > div{ flex:1; min-width:160px; }
+
+  textarea{ width:100%; background:var(--bg3); border:1px solid var(--line); color:var(--cream); padding:11px; font-family:'JetBrains Mono',monospace; font-size:12px; min-height:110px; resize:vertical; }
+  textarea:focus, select:focus{outline:none; border-color:var(--amber);}
+  select{ width:100%; background:var(--bg3); border:1px solid var(--line); color:var(--cream); padding:10px; font-size:13px; }
+  input[type=text],input[type=number],input[type=date],input[type=time],input[type=tel],input[type=password]{
+    width:100%; background:var(--bg3); border:1px solid var(--line); color:var(--cream); padding:10px; font-size:13px;
+  }
+  input:focus{ outline:none; border-color:var(--amber); }
+  label.small{ display:block; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--cream-faint); margin-bottom:6px; }
+
+  .manifest{ position:relative; border:1px solid var(--line); background:var(--bg3); padding:18px 18px 18px 22px; margin-bottom:12px; }
+  .manifest::before{ content:''; position:absolute; left:0; top:8px; bottom:8px; width:3px; background:var(--amber); }
+  .manifest-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; flex-wrap:wrap; gap:8px;}
+  .manifest-head .kit-name{ font-family:'Cormorant Garamond',serif; font-size:19px; color:var(--cream); }
+  .manifest-head .kit-code{ font-size:10px; letter-spacing:0.1em; color:var(--cream-faint); text-transform:uppercase; }
+  .manifest-items{ font-size:12px; color:var(--cream-dim); line-height:1.9; }
+  .tray-dots{ letter-spacing:2px; color:var(--amber); font-size:10px; }
+
+  .pill-list{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .pill{ font-size:12px; padding:6px 12px; border:1px solid var(--line); color:var(--cream-dim); display:flex; align-items:center; gap:8px; background:var(--bg2); }
+  .pill button{ background:none; border:none; color:var(--rust); font-size:14px; line-height:1; padding:0; }
+
+  .search-results{ border:1px solid var(--line); max-height:220px; overflow-y:auto; margin-top:6px; background:var(--bg3); }
+  .search-row{ display:flex; justify-content:space-between; padding:9px 12px; font-size:12.5px; border-bottom:1px solid var(--line-soft); cursor:pointer; }
+  .search-row:hover{ background:rgba(200,155,92,0.07); }
+  .search-row .n{ color:var(--cream-dim); }
+  .search-row .p{ font-family:'JetBrains Mono',monospace; color:var(--amber-bright); }
+
+  .empty{ text-align:center; padding:40px 20px; color:var(--cream-faint); font-size:13px; border:1px dashed var(--line); }
+  .divider{ height:1px; background:var(--line); margin:22px 0; }
+  .payout-row{ display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .payout-row input{ flex:1; }
+  .payout-row .amt{ max-width:110px; }
+  .whatsapp-box{ background:var(--bg3); border:1px solid var(--line); padding:14px; font-size:12.5px; color:var(--cream-dim); margin-top:12px; white-space:pre-wrap; font-family:'JetBrains Mono',monospace; line-height:1.6;}
+  .flex-between{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;}
+
+  .account-row{ display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line-soft); flex-wrap:wrap; }
+  .account-row:last-child{ border-bottom:none; }
+  .account-row .acc-label{ flex:1 1 180px; font-size:13px; color:var(--cream); }
+  .account-row input{ flex:1 1 140px; max-width:170px; }
+
+  ::-webkit-scrollbar{ width:9px; height:9px; }
+  ::-webkit-scrollbar-track{ background:var(--bg2); }
+  ::-webkit-scrollbar-thumb{ background:var(--line); }
+
+  @media (max-width:820px){
+    .shell{ flex-direction:column; }
+    .sidebar{ width:100%; display:flex; overflow-x:auto; padding:8px; min-height:auto; }
+    .nav-item{ white-space:nowrap; border-left:none; border-bottom:2px solid transparent; padding:10px 16px;}
+    .nav-item.active{ border-left:none; border-bottom-color:var(--amber);}
+    .main{ padding:22px 16px; }
+    .topbar{ padding:14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="brand-mark">Sante Life Science</div>
+    <div class="brand-title">Kit &amp; Ledger Desk</div>
+    <div class="brand-sub" id="login-sub">Instrument kit booking, ordering, and doctor accounts.</div>
+
+    <!-- Step 0: choose role -->
+    <div id="login-step-role">
+      <div class="field">
+        <label>Sign in as</label>
+        <select id="login-role">
+          <option value="">Choose…</option>
+          <option value="admin">Admin (Sante team)</option>
+          <option value="doctor">Doctor / practice account</option>
+        </select>
+      </div>
+      <button class="btn btn-block" onclick="startLoginFlow()">Continue</button>
+    </div>
+
+    <!-- Step 1a: admin passcode -->
+    <div id="login-step-admin" style="display:none;">
+      <div class="field">
+        <label>Admin passcode</label>
+        <input type="password" id="admin-passcode" placeholder="••••••••">
+      </div>
+      <button class="btn btn-block" onclick="submitAdminLogin()">Enter</button>
+      <a class="back-link" onclick="resetLoginFlow()">← back</a>
+    </div>
+
+    <!-- Step 1b: doctor phone -->
+    <div id="login-step-phone" style="display:none;">
+      <div class="field">
+        <label>Your mobile number</label>
+        <input type="tel" id="login-phone" placeholder="98xxxxxxxx">
+      </div>
+      <button class="btn btn-block" onclick="lookupAccount()">Continue</button>
+      <a class="back-link" onclick="resetLoginFlow()">← back</a>
+      <div class="login-msg" id="phone-msg"></div>
+    </div>
+
+    <!-- Step 2a: first-time PIN + biometric setup -->
+    <div id="login-step-pin" style="display:none;">
+      <div class="hint" style="margin-top:0; margin-bottom:16px;">First time signing in as <b id="pin-account-label" class="serif" style="color:var(--amber-bright); font-style:normal;"></b>. Enter the one-time password the Sante team sent you on WhatsApp, then set up fingerprint / Face ID for this device.</div>
+      <div class="field">
+        <label>One-time password</label>
+        <input type="password" id="login-pin" placeholder="6-digit code">
+      </div>
+      <button class="btn btn-block" onclick="verifyPinAndBind()">Verify &amp; Enable Fingerprint</button>
+      <a class="back-link" onclick="resetLoginFlow()">← back</a>
+      <div class="login-msg" id="pin-msg"></div>
+    </div>
+
+    <!-- Step 2b: returning — biometric unlock -->
+    <div id="login-step-biometric" style="display:none;">
+      <div class="hint" style="margin-top:0; margin-bottom:16px;">Welcome back, <b id="bio-account-label" class="serif" style="color:var(--amber-bright); font-style:normal;"></b>. Unlock with the fingerprint / Face ID registered on this device.</div>
+      <button class="btn btn-block" onclick="verifyBiometricLogin()">Unlock</button>
+      <a class="back-link" onclick="resetLoginFlow()">← back</a>
+      <div class="login-msg" id="bio-msg"></div>
+    </div>
+
+    <div class="hint">Each account (doctor, technician, helper) logs in with its own number and its own fingerprint — no name is ever picked from a list.</div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app">
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-title serif">Sante Life Science</div>
+      <div class="tag">Kit Desk</div>
+    </div>
+    <div class="who">
+      <div><div class="name" id="who-name">—</div></div>
+      <div class="role-chip" id="who-role">—</div>
+      <button class="btn btn-outline btn-sm" onclick="logout()">Log out</button>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="sidebar" id="sidebar"></div>
+    <div class="main" id="main">
+
+      <!-- ===== ADMIN: Dashboard ===== -->
+      <div class="view" id="v-admin-dashboard">
+        <div class="view-header">
+          <div class="eyebrow">Overview</div>
+          <div class="view-title serif">Admin Dashboard</div>
+          <div class="view-desc">Live snapshot across every doctor account.</div>
+        </div>
+        <div class="stat-row" id="admin-stats"></div>
+        <div class="panel"><div class="panel-title">Orders awaiting confirmation</div><div id="admin-pending-orders"></div></div>
+      </div>
+
+      <!-- ===== ADMIN: Products ===== -->
+      <div class="view" id="v-admin-products">
+        <div class="view-header">
+          <div class="eyebrow">Catalog</div>
+          <div class="view-title serif">Product Catalog</div>
+          <div class="view-desc">MRP master list. Doctors search this list when adding items to a kit.</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Import / update prices</div>
+          <div class="view-desc" style="margin-bottom:10px;">Paste CSV rows as <span class="mono">code,name,category,mrp</span> — one product per line. Existing codes are updated in place; new codes are added.</div>
+          <div style="margin-bottom:12px;">
+            <label class="small">Upload a CSV file</label>
+            <input type="file" id="csv-file" accept=".csv,text/csv" onchange="importCsvFile(event)">
+          </div>
+          <div class="view-desc" style="margin:4px 0 8px;">— or paste rows below —</div>
+          <textarea id="csv-input" placeholder="SC-4.5-30,4.5mm Cortical Screw 30mm,Screws,420&#10;IMP-TIT-08,Titanium Spinal Implant 08,Implants,18500"></textarea>
+          <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+            <button class="btn btn-sm" onclick="importCsv()">Import pasted rows</button>
+            <button class="btn btn-outline btn-sm" onclick="document.getElementById('csv-input').value=''">Clear</button>
+            <span id="import-status" style="font-size:12px; color:var(--sage);"></span>
+          </div>
+        </div>
+        <div class="flex-between" style="margin-bottom:12px;">
+          <input type="text" id="product-search" placeholder="Search catalog…" style="max-width:280px;" oninput="renderProductTable()">
+          <span class="view-desc" id="product-count"></span>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody id="product-table-body"></tbody></table>
+        </div>
+      </div>
+
+      <!-- ===== ADMIN: Kits ===== -->
+      <div class="view" id="v-admin-kits">
+        <div class="view-header">
+          <div class="eyebrow">Templates</div>
+          <div class="view-title serif">Kit Templates</div>
+          <div class="view-desc">Pre-built bundles doctors can pick and then customize with extra items.</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">New kit template</div>
+          <div class="row">
+            <div><label class="small">Kit name</label><input type="text" id="kit-name" placeholder="e.g. Spine Fixation Kit A"></div>
+            <div><label class="small">Kit code</label><input type="text" id="kit-code" placeholder="e.g. SPN-A"></div>
+          </div>
+          <div style="margin-top:14px;">
+            <label class="small">Add products to this kit</label>
+            <input type="text" id="kit-product-search" placeholder="Search catalog to add…" oninput="renderKitProductSearch()">
+            <div class="search-results" id="kit-product-results" style="display:none;"></div>
+            <div class="pill-list" id="kit-product-pills"></div>
+          </div>
+          <button class="btn btn-sm" style="margin-top:16px;" onclick="createKit()">Save kit template</button>
+        </div>
+        <div id="kits-list"></div>
+      </div>
+
+      <!-- ===== ADMIN: Doctors ===== -->
+      <div class="view" id="v-admin-doctors">
+        <div class="view-header">
+          <div class="eyebrow">Accounts</div>
+          <div class="view-title serif">Doctors</div>
+          <div class="view-desc">Each doctor gets exactly 3 logins — Doctor, Technician, Helper — each with its own number and its own fingerprint binding.</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Add doctor</div>
+          <div class="row">
+            <div><label class="small">Doctor name</label><input type="text" id="doc-name" placeholder="Dr. Ashray Deshmukh"></div>
+            <div><label class="small">Doctor's own WhatsApp number</label><input type="tel" id="doc-phone" placeholder="98xxxxxxxx"></div>
+            <div><label class="small">Incentive rate (%)</label><input type="number" id="doc-incentive" placeholder="30"></div>
+            <div><label class="small">Payment due (days)</label><input type="number" id="doc-due-days" placeholder="30"></div>
+          </div>
+          <button class="btn btn-sm" style="margin-top:14px;" onclick="createDoctor()">Add doctor</button>
+        </div>
+        <div id="doctors-list"></div>
+      </div>
+
+      <!-- ===== ADMIN: Orders ===== -->
+      <div class="view" id="v-admin-orders">
+        <div class="view-header"><div class="eyebrow">Queue</div><div class="view-title serif">Orders</div><div class="view-desc">Review, confirm, and send the WhatsApp bill.</div></div>
+        <div id="admin-orders-list"></div>
+      </div>
+
+      <!-- ===== ADMIN: Ledger & Payouts ===== -->
+      <div class="view" id="v-admin-ledger">
+        <div class="view-header"><div class="eyebrow">Settlement</div><div class="view-title serif">Ledger &amp; Incentive Payouts</div><div class="view-desc">Record payments received and split incentive payouts across payees.</div></div>
+        <div id="admin-ledger-list"></div>
+      </div>
+
+      <!-- ===== DOCTOR: Dashboard ===== -->
+      <div class="view" id="v-doc-dashboard">
+        <div class="view-header"><div class="eyebrow">Your account</div><div class="view-title serif" id="doc-dash-title">My Dashboard</div></div>
+        <div class="stat-row" id="doc-stats"></div>
+        <div class="panel"><div class="panel-title">Recent orders</div><div id="doc-recent-orders"></div></div>
+      </div>
+
+      <!-- ===== DOCTOR: New Order ===== -->
+      <div class="view" id="v-doc-neworder">
+        <div class="view-header"><div class="eyebrow">Book</div><div class="view-title serif">New Order</div><div class="view-desc">Pick a kit template, customize it, and set the date &amp; time.</div></div>
+        <div class="panel">
+          <div class="panel-title">1. Choose a kit template (optional)</div>
+          <select id="order-kit-select" onchange="applyKitTemplate()"><option value="">— Build from scratch —</option></select>
+        </div>
+        <div class="panel">
+          <div class="panel-title">2. Items in this order</div>
+          <input type="text" id="order-product-search" placeholder="Search catalog to add an item…" oninput="renderOrderProductSearch()">
+          <div class="search-results" id="order-product-results" style="display:none;"></div>
+          <div class="pill-list" id="order-items-pills"></div>
+          <div class="divider"></div>
+          <div class="flex-between"><span class="view-desc">Total MRP</span><span class="num" id="order-mrp-preview" style="font-size:18px;">₹0</span></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">3. Date &amp; time</div>
+          <div class="row">
+            <div><label class="small">Date</label><input type="date" id="order-date"></div>
+            <div><label class="small">Time</label><input type="time" id="order-time"></div>
+          </div>
+        </div>
+        <button class="btn" onclick="placeOrder()">Place order</button>
+      </div>
+
+      <!-- ===== DOCTOR: My Orders ===== -->
+      <div class="view" id="v-doc-orders">
+        <div class="view-header"><div class="eyebrow">History</div><div class="view-title serif">My Orders</div></div>
+        <div id="doc-orders-list"></div>
+      </div>
+
+      <!-- ===== DOCTOR: My Ledger ===== -->
+      <div class="view" id="v-doc-ledger">
+        <div class="view-header"><div class="eyebrow">Summary</div><div class="view-title serif">My Ledger</div><div class="view-desc">Billing, dues, and incentive payouts — visible only to you.</div></div>
+        <div class="stat-row" id="doc-ledger-stats"></div>
+        <div class="panel">
+          <div class="panel-title">Monthly summary</div>
+          <div class="table-wrap"><table><thead><tr><th>Month</th><th style="text-align:right;">Orders</th><th style="text-align:right;">MRP Total</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Incentive</th></tr></thead><tbody id="doc-monthly-body"></tbody></table></div>
+        </div>
+        <div class="panel"><div class="panel-title">Incentive payouts received</div><div id="doc-payouts-list"></div></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   FIREBASE INIT
+============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyCWHiMdHwb2wZbvS1BbFkbtPZGKuO3rHUk",
+  authDomain: "sante-life-science.firebaseapp.com",
+  databaseURL: "https://sante-life-science-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "sante-life-science",
+  storageBucket: "sante-life-science.firebasestorage.app",
+  messagingSenderId: "137549074060",
+  appId: "1:137549074060:web:469cca3314f9caf5e8f5a9"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// Anonymous auth just to satisfy "request.auth != null" in DB rules.
+firebase.auth().signInAnonymously().catch(err => console.error('Anon auth failed', err));
+
+// CHANGE THIS before going live with real doctors.
+const ADMIN_PASSCODE = "SanteAdmin@2026";
+
+let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {} };
+let SESSION = null; // {role:'admin'} or {role:'doctor', doctorId, accountKey, accountLabel}
+let pendingLogin = null; // {doctorId, accountKey} while mid-login
+let currentView = null;
+
+function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+/* ============================================================
+   REALTIME LISTENERS
+============================================================ */
+function attachListeners(){
+  db.ref('products').on('value', snap => { DB.products = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('kits').on('value', snap => { DB.kits = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('doctors').on('value', snap => { DB.doctors = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('orders').on('value', snap => { DB.orders = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
+}
+function rerenderIfNeeded(){
+  if(SESSION && currentView) showView(currentView, true);
+}
+
+function productsArr(){ return Object.values(DB.products || {}); }
+function kitsArr(){ return Object.entries(DB.kits).map(([id,k])=>({id,...k})); }
+function doctorsArr(){ return Object.entries(DB.doctors).map(([id,d])=>({id,...d})); }
+function ordersArr(){ return Object.entries(DB.orders).map(([id,o])=>({id,...o})); }
+function payoutsArr(){ return Object.entries(DB.payouts).map(([id,p])=>({id,...p})); }
+
+/* ============================================================
+   CRYPTO HELPERS
+============================================================ */
+async function sha256(text){
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function randomPin(){ return String(Math.floor(100000 + Math.random()*900000)); }
+function abToB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function b64ToAb(b64){ const bin = atob(b64); const bytes = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer; }
+
+async function registerBiometric(label){
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { name: "Sante Life Science" },
+      user: { id: userId, name: label, displayName: label },
+      pubKeyCredParams: [{alg:-7, type:"public-key"}, {alg:-257, type:"public-key"}],
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+      timeout: 60000
+    }
+  });
+  return abToB64(cred.rawId);
+}
+async function verifyBiometric(credentialIdB64){
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  await navigator.credentials.get({
+    publicKey: {
+      challenge,
+      allowCredentials: [{ id: b64ToAb(credentialIdB64), type: "public-key" }],
+      userVerification: "required",
+      timeout: 60000
+    }
+  });
+  return true; // throws on failure/cancel, caught by caller
+}
+
+/* ============================================================
+   LOGIN FLOW
+============================================================ */
+function hideAllLoginSteps(){
+  ['login-step-role','login-step-admin','login-step-phone','login-step-pin','login-step-biometric'].forEach(id=>{
+    document.getElementById(id).style.display='none';
+  });
+}
+function resetLoginFlow(){
+  hideAllLoginSteps();
+  document.getElementById('login-step-role').style.display='block';
+  document.getElementById('login-role').value='';
+  pendingLogin = null;
+}
+function startLoginFlow(){
+  const role = document.getElementById('login-role').value;
+  if(!role) return;
+  hideAllLoginSteps();
+  if(role==='admin'){
+    document.getElementById('login-step-admin').style.display='block';
+  } else {
+    document.getElementById('login-step-phone').style.display='block';
+  }
+}
+function submitAdminLogin(){
+  const val = document.getElementById('admin-passcode').value;
+  if(val !== ADMIN_PASSCODE){ alert('Incorrect passcode.'); return; }
+  SESSION = { role:'admin' };
+  enterApp();
+}
+
+function findAccountByPhone(phone){
+  const clean = phone.replace(/[^\d]/g,'');
+  for(const doc of doctorsArr()){
+    for(const key of ['doctor','technician','helper']){
+      const acc = doc.accounts && doc.accounts[key];
+      if(acc && acc.phone && acc.phone.replace(/[^\d]/g,'').endsWith(clean.slice(-10))){
+        return { doctorId: doc.id, accountKey: key, account: acc, doctor: doc };
+      }
+    }
+  }
+  return null;
+}
+
+function lookupAccount(){
+  const phone = document.getElementById('login-phone').value.trim();
+  const msg = document.getElementById('phone-msg');
+  if(!phone){ msg.textContent='Enter your number.'; msg.className='login-msg err'; return; }
+  const found = findAccountByPhone(phone);
+  if(!found){ msg.textContent='No account found with this number. Ask the Sante team to add it.'; msg.className='login-msg err'; return; }
+  msg.textContent=''; pendingLogin = found;
+  hideAllLoginSteps();
+  if(found.account.bound && found.account.credentialId){
+    document.getElementById('bio-account-label').textContent = found.account.label;
+    document.getElementById('login-step-biometric').style.display='block';
+  } else if(found.account.pinHash){
+    document.getElementById('pin-account-label').textContent = found.account.label;
+    document.getElementById('login-step-pin').style.display='block';
+  } else {
+    document.getElementById('phone-msg').textContent='No one-time password set for this account yet. Ask the Sante team to issue one.';
+    document.getElementById('phone-msg').className='login-msg err';
+    document.getElementById('login-step-phone').style.display='block';
+  }
+}
+
+async function verifyPinAndBind(){
+  const pin = document.getElementById('login-pin').value.trim();
+  const msg = document.getElementById('pin-msg');
+  if(!pin){ msg.textContent='Enter the one-time password.'; msg.className='login-msg err'; return; }
+  const hash = await sha256(pin);
+  if(hash !== pendingLogin.account.pinHash){ msg.textContent='Incorrect one-time password.'; msg.className='login-msg err'; return; }
+  try{
+    msg.textContent='Confirm with your fingerprint / Face ID…'; msg.className='login-msg ok';
+    const credentialId = await registerBiometric(pendingLogin.account.label);
+    await db.ref(`doctors/${pendingLogin.doctorId}/accounts/${pendingLogin.accountKey}`).update({
+      credentialId, bound:true, pinHash:null
+    });
+    SESSION = { role:'doctor', doctorId: pendingLogin.doctorId, accountKey: pendingLogin.accountKey, accountLabel: pendingLogin.account.label };
+    enterApp();
+  }catch(err){
+    msg.textContent='Fingerprint setup was cancelled or failed. Try again.'; msg.className='login-msg err';
+  }
+}
+
+async function verifyBiometricLogin(){
+  const msg = document.getElementById('bio-msg');
+  try{
+    msg.textContent='Waiting for fingerprint / Face ID…'; msg.className='login-msg ok';
+    await verifyBiometric(pendingLogin.account.credentialId);
+    SESSION = { role:'doctor', doctorId: pendingLogin.doctorId, accountKey: pendingLogin.accountKey, accountLabel: pendingLogin.account.label };
+    enterApp();
+  }catch(err){
+    msg.textContent="That didn't match this account's fingerprint. Try again."; msg.className='login-msg err';
+  }
+}
+
+function enterApp(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app').style.display='block';
+  buildSidebar();
+  refreshWho();
+  showView(SESSION.role==='admin' ? 'admin-dashboard' : 'doc-dashboard');
+}
+function logout(){
+  SESSION=null; currentView=null;
+  document.getElementById('app').style.display='none';
+  document.getElementById('login-screen').style.display='flex';
+  resetLoginFlow();
+}
+function refreshWho(){
+  if(SESSION.role==='admin'){
+    document.getElementById('who-name').textContent='Sante Life Science Admin';
+    document.getElementById('who-role').textContent='Admin';
+  } else {
+    const doc = DB.doctors[SESSION.doctorId];
+    document.getElementById('who-name').textContent = `${doc.name} — ${SESSION.accountLabel}`;
+    document.getElementById('who-role').textContent = 'Doctor account';
+  }
+}
+
+/* ============================================================
+   SIDEBAR / ROUTING
+============================================================ */
+const ADMIN_NAV = [['admin-dashboard','Dashboard'],['admin-products','Products'],['admin-kits','Kits'],['admin-doctors','Doctors'],['admin-orders','Orders'],['admin-ledger','Ledger & Payouts']];
+const DOC_NAV = [['doc-dashboard','Dashboard'],['doc-neworder','New Order'],['doc-orders','My Orders'],['doc-ledger','My Ledger']];
+
+function buildSidebar(){
+  const nav = SESSION.role==='admin' ? ADMIN_NAV : DOC_NAV;
+  document.getElementById('sidebar').innerHTML = nav.map(([id,label])=>`<button class="nav-item" data-view="${id}" onclick="showView('${id}')">${label}</button>`).join('');
+}
+function showView(id, silent){
+  currentView = id;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('v-'+id).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===id));
+  if(id==='admin-dashboard') renderAdminDashboard();
+  if(id==='admin-products') renderProductTable();
+  if(id==='admin-kits') renderKitsList();
+  if(id==='admin-doctors') renderDoctorsList();
+  if(id==='admin-orders') renderAdminOrders();
+  if(id==='admin-ledger') renderAdminLedger();
+  if(id==='doc-dashboard') renderDocDashboard();
+  if(id==='doc-neworder' && !silent) renderNewOrderView();
+  if(id==='doc-orders') renderDocOrders();
+  if(id==='doc-ledger') renderDocLedger();
+}
+
+/* ============================================================
+   HELPERS
+============================================================ */
+const money = n => '₹' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:0});
+const findDoc = id => DB.doctors[id] ? {id, ...DB.doctors[id]} : null;
+function sanitizeKey(code){
+  return String(code).replace(/\./g,'_d_').replace(/#/g,'_h_').replace(/\$/g,'_dl_').replace(/\//g,'_s_').replace(/\[/g,'_lb_').replace(/\]/g,'_rb_');
+}
+const findProduct = code => productsArr().find(p=>p.code===code) || null;
+const kitTotal = codes => codes.reduce((s,c)=>s+(findProduct(c)?.mrp||0),0);
+function orderMrpTotal(o){ return o.productCodes.reduce((s,c)=>s+(findProduct(c)?.mrp||0),0); }
+function orderIncentive(o){ const doc=findDoc(o.doctorId); return Math.round(orderMrpTotal(o) * ((doc?.incentivePct||0)/100)); }
+function orderDiscounted(o){ return orderMrpTotal(o) - orderIncentive(o); }
+function orderPaid(o){ return Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0); }
+function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date); d.setDate(d.getDate()+(doc?.dueDays||30)); return d.toISOString().slice(0,10); }
+
+/* ============================================================
+   ADMIN: DASHBOARD
+============================================================ */
+function renderAdminDashboard(){
+  const orders = ordersArr();
+  const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
+  const totalIncentive = orders.reduce((s,o)=>s+orderIncentive(o),0);
+  const totalDue = orders.reduce((s,o)=>s+(orderDiscounted(o)-orderPaid(o)),0);
+  const pending = orders.filter(o=>o.status==='pending');
+  document.getElementById('admin-stats').innerHTML = `
+    <div class="stat-card"><div class="label">Doctors</div><div class="value">${doctorsArr().length}</div></div>
+    <div class="stat-card"><div class="label">Total orders</div><div class="value">${orders.length}</div></div>
+    <div class="stat-card"><div class="label">Total MRP billed</div><div class="value">${money(totalMrp)}</div></div>
+    <div class="stat-card"><div class="label">Total incentive</div><div class="value amber">${money(totalIncentive)}</div></div>
+    <div class="stat-card"><div class="label">Outstanding dues</div><div class="value ${totalDue>0?'':'sage'}">${money(totalDue)}</div></div>`;
+  document.getElementById('admin-pending-orders').innerHTML = pending.length ? pending.map(o=>{
+    const doc=findDoc(o.doctorId);
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge pending">Pending</span></div>
+      <div class="manifest-items">${o.productCodes.length} items · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}</div>
+      <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">Review in Orders →</button></div></div>`;
+  }).join('') : `<div class="empty">No orders waiting on confirmation right now.</div>`;
+}
+
+/* ============================================================
+   ADMIN: PRODUCTS
+============================================================ */
+function renderProductTable(){
+  const q = (document.getElementById('product-search').value||'').toLowerCase();
+  const all = productsArr();
+  const rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products`;
+  document.getElementById('product-table-body').innerHTML = rows.slice(0,300).map(p=>`
+    <tr><td class="num">${p.code}</td><td>${p.name}</td><td>${p.category}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No matches.</td></tr>`;
+}
+async function parseAndImportCsv(raw){
+  const statusEl = document.getElementById('import-status');
+  if(!raw || !raw.trim()) return;
+  let lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  // Drop a header row if the first line looks like column labels rather than data.
+  if(lines.length && /code/i.test(lines[0]) && /name/i.test(lines[0]) && /mrp/i.test(lines[0])){
+    lines = lines.slice(1);
+  }
+  let added=0, updated=0, skipped=0;
+  const updates = {};
+  const existingCodes = new Set(productsArr().map(p=>p.code));
+  lines.forEach(line=>{
+    const parts = line.split(',').map(s=>s.trim());
+    if(parts.length<4){ skipped++; return; }
+    const [code,name,category,mrpStr] = parts;
+    const mrp = parseFloat(mrpStr.replace(/[^\d.]/g,''));
+    if(!code || isNaN(mrp)){ skipped++; return; }
+    if(existingCodes.has(code)) updated++; else added++;
+    updates[sanitizeKey(code)] = { code, name, category, mrp };
+  });
+  if(Object.keys(updates).length===0){
+    statusEl.style.color='var(--rust)';
+    statusEl.textContent = `Nothing to import — check the format is code,name,category,mrp (${skipped} rows skipped).`;
+    return;
+  }
+  try{
+    await db.ref('products').update(updates);
+    statusEl.style.color='var(--sage)';
+    statusEl.textContent = `Added ${added}, updated ${updated}${skipped?`, skipped ${skipped}`:''}.`;
+  }catch(err){
+    statusEl.style.color='var(--rust)';
+    statusEl.textContent = 'Import failed: ' + err.message + ' — if this says "permission_denied", enable Anonymous sign-in in Firebase and refresh.';
+  }
+}
+async function importCsv(){
+  const raw = document.getElementById('csv-input').value.trim();
+  await parseAndImportCsv(raw);
+  document.getElementById('csv-input').value='';
+}
+function importCsvFile(event){
+  const file = event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    await parseAndImportCsv(e.target.result);
+    event.target.value = ''; // allow re-uploading the same filename later
+  };
+  reader.readAsText(file);
+}
+
+/* ============================================================
+   ADMIN: KITS
+============================================================ */
+let kitBuilderCodes = [];
+function renderKitProductSearch(){
+  const q = document.getElementById('kit-product-search').value.trim().toLowerCase();
+  const box = document.getElementById('kit-product-results');
+  if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const matches = productsArr().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,20);
+  box.style.display = matches.length ? 'block':'none';
+  box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addKitProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
+}
+function addKitProduct(code){ if(!kitBuilderCodes.includes(code)) kitBuilderCodes.push(code); document.getElementById('kit-product-search').value=''; document.getElementById('kit-product-results').style.display='none'; renderKitPills(); }
+function removeKitProduct(code){ kitBuilderCodes = kitBuilderCodes.filter(c=>c!==code); renderKitPills(); }
+function renderKitPills(){
+  document.getElementById('kit-product-pills').innerHTML = kitBuilderCodes.map(c=>{ const p=findProduct(c); return `<span class="pill">${p.name} <button onclick="removeKitProduct('${c}')">×</button></span>`; }).join('');
+}
+async function createKit(){
+  const name = document.getElementById('kit-name').value.trim();
+  const code = document.getElementById('kit-code').value.trim();
+  if(!name || kitBuilderCodes.length===0){ alert('Give the kit a name and add at least one product.'); return; }
+  try{
+    await db.ref('kits/' + uid('kit')).set({ name, code: code || name.slice(0,6).toUpperCase(), productCodes:[...kitBuilderCodes] });
+    document.getElementById('kit-name').value=''; document.getElementById('kit-code').value='';
+    kitBuilderCodes=[]; renderKitPills();
+  }catch(err){
+    alert('Could not save this kit: ' + err.message);
+  }
+}
+function renderKitsList(){
+  document.getElementById('kits-list').innerHTML = kitsArr().map(k=>`
+    <div class="manifest"><div class="manifest-head"><div><span class="kit-name">${k.name}</span> <span class="kit-code">· ${k.code}</span></div><span class="tray-dots">TRAY · ${k.productCodes.length} ITEMS</span></div>
+      <div class="manifest-items">${k.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
+      <div style="margin-top:10px; font-size:12px; color:var(--cream-faint);">Kit MRP total: <span class="num">${money(kitTotal(k.productCodes))}</span></div></div>`
+  ).join('') || `<div class="empty">No kit templates yet — build one above.</div>`;
+}
+
+/* ============================================================
+   ADMIN: DOCTORS (create + manage 3 fixed accounts)
+============================================================ */
+async function createDoctor(){
+  const name = document.getElementById('doc-name').value.trim();
+  const phone = document.getElementById('doc-phone').value.trim().replace(/[^\d]/g,'');
+  const incentivePct = parseFloat(document.getElementById('doc-incentive').value)||0;
+  const dueDays = parseInt(document.getElementById('doc-due-days').value)||30;
+  if(!name || !phone){ alert('Doctor name and WhatsApp number are required.'); return; }
+  try{
+    await db.ref('doctors/' + uid('doc')).set({
+      name, incentivePct, dueDays,
+      accounts: {
+        doctor:     { label: `${name} (Doctor)`,        phone, pinHash:null, credentialId:null, bound:false },
+        technician: { label: `Technician — ${name}`,     phone:'', pinHash:null, credentialId:null, bound:false },
+        helper:     { label: `Helper — ${name}`,          phone:'', pinHash:null, credentialId:null, bound:false }
+      }
+    });
+    ['doc-name','doc-phone','doc-incentive','doc-due-days'].forEach(id=>document.getElementById(id).value='');
+  }catch(err){
+    alert('Could not save this doctor: ' + err.message + '\n\nIf this says "Permission denied", enable Anonymous sign-in in Firebase Authentication and refresh the page.');
+  }
+}
+
+async function saveAccountPhone(doctorId, accountKey, value){
+  await db.ref(`doctors/${doctorId}/accounts/${accountKey}/phone`).set(value.replace(/[^\d]/g,''));
+}
+async function issuePin(doctorId, accountKey){
+  const doc = findDoc(doctorId);
+  const acc = doc.accounts[accountKey];
+  if(!acc.phone){ alert("Add this account's phone number first."); return; }
+  const pin = randomPin();
+  const hash = await sha256(pin);
+  await db.ref(`doctors/${doctorId}/accounts/${accountKey}`).update({ pinHash: hash, bound:false, credentialId:null });
+  const msg = `Hello, this is your Sante Life Science login for "${acc.label}".\nOne-time password: ${pin}\nOpen the app, enter this number and code, then set up your fingerprint / Face ID. This code works once.\n— Sante Life Science`;
+  window.open(`https://wa.me/${acc.phone}?text=${encodeURIComponent(msg)}`, '_blank');
+}
+async function resetBinding(doctorId, accountKey){
+  if(!confirm('This removes the fingerprint binding for this account. They will need a new one-time password to log in again. Continue?')) return;
+  await db.ref(`doctors/${doctorId}/accounts/${accountKey}`).update({ bound:false, credentialId:null, pinHash:null });
+}
+
+function renderDoctorsList(){
+  document.getElementById('doctors-list').innerHTML = doctorsArr().map(d=>{
+    const rows = ['doctor','technician','helper'].map(key=>{
+      const acc = d.accounts[key];
+      const status = acc.bound ? `<span class="badge bound">Fingerprint set</span>` : (acc.pinHash ? `<span class="badge pending">PIN sent, awaiting setup</span>` : `<span class="badge unbound">Not set up</span>`);
+      return `<div class="account-row">
+        <div class="acc-label">${acc.label} ${status}</div>
+        <input type="tel" placeholder="Phone number" value="${acc.phone||''}" onchange="saveAccountPhone('${d.id}','${key}',this.value)">
+        <button class="btn btn-outline btn-sm" onclick="issuePin('${d.id}','${key}')">Issue one-time password</button>
+        ${acc.bound ? `<button class="btn btn-outline btn-sm" onclick="resetBinding('${d.id}','${key}')">Reset</button>` : ''}
+      </div>`;
+    }).join('');
+    return `<div class="manifest">
+      <div class="manifest-head"><div><span class="kit-name">${d.name}</span></div><span class="tray-dots">${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span></div>
+      ${rows}
+    </div>`;
+  }).join('') || `<div class="empty">No doctors yet.</div>`;
+}
+
+/* ============================================================
+   ADMIN: ORDERS
+============================================================ */
+function renderAdminOrders(){
+  const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+  document.getElementById('admin-orders-list').innerHTML = list.length ? list.map(o=>{
+    const doc = findDoc(o.doctorId);
+    const billPhone = doc.accounts.doctor.phone;
+    const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
+    const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
+    const waLink = `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`;
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${o.status}">${o.status}</span></div>
+      <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
+      <div class="row" style="margin-top:12px;">
+        <div class="stat-card" style="padding:12px;"><div class="label">MRP</div><div class="value" style="font-size:16px;">${money(mrp)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Discounted bill</div><div class="value amber" style="font-size:16px;">${money(disc)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Incentive</div><div class="value sage" style="font-size:16px;">${money(inc)}</div></div>
+      </div>
+      <div class="whatsapp-box">${msg}</div>
+      <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+        ${o.status==='pending' ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
+        <a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>
+      </div></div>`;
+  }).join('') : `<div class="empty">No orders yet.</div>`;
+}
+async function confirmOrder(id){ await db.ref('orders/'+id+'/status').set('confirmed'); }
+
+/* ============================================================
+   ADMIN: LEDGER & PAYOUTS
+============================================================ */
+let payoutDraft = {};
+function renderAdminLedger(){
+  const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+  document.getElementById('admin-ledger-list').innerHTML = list.length ? list.map(o=>{
+    const doc=findDoc(o.doctorId);
+    const disc=orderDiscounted(o), inc=orderIncentive(o), paid=orderPaid(o), balance=disc-paid;
+    const paidStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial':'due');
+    const existingPayouts = payoutsArr().filter(p=>p.orderId===o.id);
+    const incentivePaid = existingPayouts.reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
+    if(!payoutDraft[o.id]) payoutDraft[o.id] = [{name:doc.name, amount:inc}];
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date}</span></div><span class="badge ${paidStatus}">${paidStatus}</span></div>
+      <div class="row" style="margin-top:10px;">
+        <div class="stat-card" style="padding:12px;"><div class="label">Bill</div><div class="value" style="font-size:15px;">${money(disc)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Paid</div><div class="value sage" style="font-size:15px;">${money(paid)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Balance due</div><div class="value" style="font-size:15px; color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Incentive</div><div class="value amber" style="font-size:15px;">${money(inc)} <span style="font-size:11px; color:var(--cream-faint);">(${money(incentivePaid)} paid)</span></div></div>
+      </div>
+      <div class="divider"></div>
+      <div class="panel-title" style="font-size:15px;">Record a payment</div>
+      <div class="row"><div><input type="number" placeholder="Amount received (₹)" id="pay-amt-${o.id}"></div><div><button class="btn btn-sm" onclick="recordPayment('${o.id}')">Record + WhatsApp receipt</button></div></div>
+      <div class="divider"></div>
+      <div class="panel-title" style="font-size:15px;">Incentive payout split</div>
+      <div id="payout-rows-${o.id}">
+        ${payoutDraft[o.id].map((row,i)=>`<div class="payout-row">
+          <input type="text" placeholder="Payee name" value="${row.name}" oninput="updatePayoutDraft('${o.id}',${i},'name',this.value)">
+          <input type="number" class="amt" placeholder="₹" value="${row.amount}" oninput="updatePayoutDraft('${o.id}',${i},'amount',this.value)">
+          <button class="btn btn-outline btn-sm" onclick="removePayoutRow('${o.id}',${i})">Remove</button>
+        </div>`).join('')}
+      </div>
+      <div style="display:flex; gap:10px; margin-top:8px;">
+        <button class="btn btn-outline btn-sm" onclick="addPayoutRow('${o.id}')">+ Add payee</button>
+        <button class="btn btn-sm" onclick="payIncentive('${o.id}')">Mark incentive paid + WhatsApp</button>
+      </div></div>`;
+  }).join('') : `<div class="empty">No orders to settle yet.</div>`;
+}
+function addPayoutRow(orderId){ payoutDraft[orderId].push({name:'',amount:0}); renderAdminLedger(); }
+function removePayoutRow(orderId, idx){ payoutDraft[orderId].splice(idx,1); renderAdminLedger(); }
+function updatePayoutDraft(orderId, idx, field, val){ payoutDraft[orderId][idx][field] = field==='amount' ? (parseFloat(val)||0) : val; }
+
+async function recordPayment(orderId){
+  const amt = parseFloat(document.getElementById(`pay-amt-${orderId}`).value);
+  if(!amt || amt<=0) return;
+  const o = ordersArr().find(x=>x.id===orderId);
+  await db.ref(`orders/${orderId}/payments/${uid('pay')}`).set({ amount:amt, date:new Date().toISOString().slice(0,10) });
+  const doc = findDoc(o.doctorId);
+  const billPhone = doc.accounts.doctor.phone;
+  const newPaid = orderPaid(o)+amt;
+  const balance = orderDiscounted(o) - newPaid;
+  const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)}.\nRemaining balance on this order: ${money(Math.max(balance,0))}\n— Sante Life Science`;
+  window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+}
+async function payIncentive(orderId){
+  const rows = (payoutDraft[orderId]||[]).filter(r=>r.name && r.amount>0);
+  if(!rows.length) return;
+  const o = ordersArr().find(x=>x.id===orderId);
+  const doc = findDoc(o.doctorId);
+  await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:new Date().toISOString().slice(0,10) });
+  const total = rows.reduce((s,r)=>s+r.amount,0);
+  const breakdown = rows.map(r=>`${money(r.amount)} to ${r.name}`).join(', ');
+  const billPhone = doc.accounts.doctor.phone;
+  const msg = `Hello ${doc.name}, your incentive of ${money(total)} has been paid.\nDetails: ${breakdown}\n— Sante Life Science`;
+  window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  delete payoutDraft[orderId];
+}
+
+/* ============================================================
+   DOCTOR: DASHBOARD
+============================================================ */
+function myOrders(){ return ordersArr().filter(o=>o.doctorId===SESSION.doctorId); }
+function renderDocDashboard(){
+  const doc = findDoc(SESSION.doctorId);
+  document.getElementById('doc-dash-title').textContent = `Welcome, ${doc.name}`;
+  const orders = myOrders();
+  const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
+  const totalInc = orders.reduce((s,o)=>s+orderIncentive(o),0);
+  const totalDue = orders.reduce((s,o)=>s+(orderDiscounted(o)-orderPaid(o)),0);
+  document.getElementById('doc-stats').innerHTML = `
+    <div class="stat-card"><div class="label">Total orders</div><div class="value">${orders.length}</div></div>
+    <div class="stat-card"><div class="label">Total MRP</div><div class="value">${money(totalMrp)}</div></div>
+    <div class="stat-card"><div class="label">Total incentive earned</div><div class="value amber">${money(totalInc)}</div></div>
+    <div class="stat-card"><div class="label">Outstanding balance</div><div class="value" style="color:${totalDue>0?'var(--rust)':'var(--sage)'}">${money(totalDue)}</div></div>`;
+  const recent = [...orders].sort((a,b)=>a.createdAt<b.createdAt?1:-1).slice(0,3);
+  document.getElementById('doc-recent-orders').innerHTML = recent.length ? recent.map(orderCardHtml).join('') : `<div class="empty">No orders yet — place your first from "New Order."</div>`;
+}
+function orderCardHtml(o){
+  const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
+  const status = o.status==='pending' ? 'pending' : (balance<=0?'paid':(paid>0?'partial':'due'));
+  return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div><span class="badge ${status}">${status}</span></div>
+    <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
+    <div class="row" style="margin-top:10px;">
+      <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(orderMrpTotal(o))}</div></div>
+      <div class="stat-card" style="padding:10px;"><div class="label">Billed</div><div class="value amber" style="font-size:14px;">${money(disc)}</div></div>
+      <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
+      <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
+    </div></div>`;
+}
+
+/* ============================================================
+   DOCTOR: NEW ORDER
+============================================================ */
+let orderDraftCodes = [];
+function renderNewOrderView(){
+  orderDraftCodes = [];
+  document.getElementById('order-kit-select').innerHTML = `<option value="">— Build from scratch —</option>` + kitsArr().map(k=>`<option value="${k.id}">${k.name}</option>`).join('');
+  document.getElementById('order-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('order-time').value = '09:00';
+  renderOrderPills();
+}
+function applyKitTemplate(){
+  const kitId = document.getElementById('order-kit-select').value;
+  const kit = kitsArr().find(k=>k.id===kitId);
+  orderDraftCodes = kit ? [...kit.productCodes] : [];
+  renderOrderPills();
+}
+function renderOrderProductSearch(){
+  const q = document.getElementById('order-product-search').value.trim().toLowerCase();
+  const box = document.getElementById('order-product-results');
+  if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const matches = productsArr().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,20);
+  box.style.display = matches.length ? 'block':'none';
+  box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
+}
+function addOrderProduct(code){ if(!orderDraftCodes.includes(code)) orderDraftCodes.push(code); document.getElementById('order-product-search').value=''; document.getElementById('order-product-results').style.display='none'; renderOrderPills(); }
+function removeOrderProduct(code){ orderDraftCodes = orderDraftCodes.filter(c=>c!==code); renderOrderPills(); }
+function renderOrderPills(){
+  document.getElementById('order-items-pills').innerHTML = orderDraftCodes.map(c=>{ const p=findProduct(c); return `<span class="pill">${p.name} · ${money(p.mrp)} <button onclick="removeOrderProduct('${c}')">×</button></span>`; }).join('');
+  document.getElementById('order-mrp-preview').textContent = money(kitTotal(orderDraftCodes));
+}
+async function placeOrder(){
+  if(orderDraftCodes.length===0){ alert('Add at least one item to the order.'); return; }
+  const date = document.getElementById('order-date').value;
+  const time = document.getElementById('order-time').value;
+  if(!date || !time){ alert('Set a date and time.'); return; }
+  await db.ref('orders/' + uid('ord')).set({
+    doctorId: SESSION.doctorId,
+    accountLabel: SESSION.accountLabel,
+    productCodes: [...orderDraftCodes],
+    date, time, status:'pending', createdAt: new Date().toISOString()
+  });
+  alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
+  showView('doc-orders');
+}
+
+/* ============================================================
+   DOCTOR: MY ORDERS / LEDGER
+============================================================ */
+function renderDocOrders(){
+  const orders = [...myOrders()].sort((a,b)=>a.createdAt<b.createdAt?1:-1);
+  document.getElementById('doc-orders-list').innerHTML = orders.length ? orders.map(orderCardHtml).join('') : `<div class="empty">No orders yet.</div>`;
+}
+function renderDocLedger(){
+  const orders = myOrders();
+  const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
+  const totalDisc = orders.reduce((s,o)=>s+orderDiscounted(o),0);
+  const totalInc = orders.reduce((s,o)=>s+orderIncentive(o),0);
+  const totalDue = orders.reduce((s,o)=>s+(orderDiscounted(o)-orderPaid(o)),0);
+  document.getElementById('doc-ledger-stats').innerHTML = `
+    <div class="stat-card"><div class="label">Total MRP</div><div class="value">${money(totalMrp)}</div></div>
+    <div class="stat-card"><div class="label">Total billed</div><div class="value amber">${money(totalDisc)}</div></div>
+    <div class="stat-card"><div class="label">Total incentive</div><div class="value sage">${money(totalInc)}</div></div>
+    <div class="stat-card"><div class="label">Outstanding</div><div class="value" style="color:${totalDue>0?'var(--rust)':'var(--sage)'}">${money(totalDue)}</div></div>`;
+  const byMonth = {};
+  orders.forEach(o=>{ const m=o.date.slice(0,7); byMonth[m]=byMonth[m]||{count:0,mrp:0,billed:0,inc:0}; byMonth[m].count++; byMonth[m].mrp+=orderMrpTotal(o); byMonth[m].billed+=orderDiscounted(o); byMonth[m].inc+=orderIncentive(o); });
+  const months = Object.keys(byMonth).sort().reverse();
+  document.getElementById('doc-monthly-body').innerHTML = months.length ? months.map(m=>`<tr><td>${m}</td><td class="num" style="text-align:right;">${byMonth[m].count}</td><td class="num" style="text-align:right;">${money(byMonth[m].mrp)}</td><td class="num" style="text-align:right;">${money(byMonth[m].billed)}</td><td class="num" style="text-align:right;">${money(byMonth[m].inc)}</td></tr>`).join('') : `<tr><td colspan="5" class="empty">No orders yet.</td></tr>`;
+  const payouts = payoutsArr().filter(p=>p.doctorId===SESSION.doctorId).sort((a,b)=>a.date<b.date?1:-1);
+  document.getElementById('doc-payouts-list').innerHTML = payouts.length ? payouts.map(p=>{
+    const total = p.payees.reduce((s,x)=>s+x.amount,0);
+    return `<div class="manifest"><div class="manifest-head"><span class="kit-name">${money(total)} paid</span><span class="kit-code">${p.date}</span></div><div class="manifest-items">${p.payees.map(x=>`${money(x.amount)} → ${x.name}`).join(' · ')}</div></div>`;
+  }).join('') : `<div class="empty">No incentive payouts recorded yet.</div>`;
+}
+
+/* ============================================================
+   INIT
+============================================================ */
+attachListeners();
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
