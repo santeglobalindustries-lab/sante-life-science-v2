@@ -189,6 +189,14 @@
     <div class="brand-title">Kit &amp; Ledger Desk</div>
     <div class="brand-sub" id="login-sub">Instrument kit booking, ordering, and doctor accounts.</div>
 
+    <!-- Step 0b: this device already belongs to someone — skip straight to fingerprint -->
+    <div id="login-step-device" style="display:none;">
+      <div class="hint" style="margin-top:0; margin-bottom:16px;">This device is set up for <b id="device-account-label" class="serif" style="color:var(--amber-bright); font-style:normal;"></b>. Unlock with fingerprint / Face ID to continue.</div>
+      <button class="btn btn-block" onclick="verifyBiometricLogin('device-msg')">Unlock</button>
+      <a class="back-link" onclick="forgetDevice()">Not you? Sign in with a different number</a>
+      <div class="login-msg" id="device-msg"></div>
+    </div>
+
     <!-- Step 0: choose role -->
     <div id="login-step-role">
       <div class="field">
@@ -243,7 +251,7 @@
       <div class="login-msg" id="bio-msg"></div>
     </div>
 
-    <div class="hint">Each account (doctor, technician, helper) logs in with its own number and its own fingerprint — no name is ever picked from a list.</div>
+    <div class="hint">Each account (doctor, technician, helper) sets up once with its number and a fingerprint. After that, this device remembers the account and only asks for a fingerprint / Face ID to unlock.</div>
   </div>
 </div>
 
@@ -464,7 +472,15 @@ function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replac
 function attachListeners(){
   db.ref('products').on('value', snap => { DB.products = snap.val() || {}; rerenderIfNeeded(); });
   db.ref('kits').on('value', snap => { DB.kits = snap.val() || {}; rerenderIfNeeded(); });
-  db.ref('doctors').on('value', snap => { DB.doctors = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('doctors').on('value', snap => {
+    DB.doctors = snap.val() || {};
+    rerenderIfNeeded();
+    // Still sitting at the login screen (not signed in) and haven't already
+    // navigated past the role-choice step? See if this device is remembered.
+    if(!SESSION && document.getElementById('login-step-role').style.display !== 'none'){
+      tryShowDeviceLogin();
+    }
+  });
   db.ref('orders').on('value', snap => { DB.orders = snap.val() || {}; rerenderIfNeeded(); });
   db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
 }
@@ -489,6 +505,23 @@ async function sha256(text){
 function randomPin(){ return String(Math.floor(100000 + Math.random()*900000)); }
 function abToB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
 function b64ToAb(b64){ const bin = atob(b64); const bytes = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer; }
+
+/* ============================================================
+   DEVICE MEMORY — remember which account this device belongs to,
+   so a doctor/technician/helper only has to unlock with a
+   fingerprint/Face ID from then on, instead of re-entering their
+   number every time.
+============================================================ */
+const DEVICE_ACCOUNT_KEY = 'sante_device_account';
+function getDeviceAccount(){
+  try{ const raw = localStorage.getItem(DEVICE_ACCOUNT_KEY); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+function setDeviceAccount(doctorId, accountKey){
+  try{ localStorage.setItem(DEVICE_ACCOUNT_KEY, JSON.stringify({doctorId, accountKey})); }catch(e){}
+}
+function clearDeviceAccount(){
+  try{ localStorage.removeItem(DEVICE_ACCOUNT_KEY); }catch(e){}
+}
 
 async function registerBiometric(label){
   const challenge = crypto.getRandomValues(new Uint8Array(32));
@@ -522,15 +555,38 @@ async function verifyBiometric(credentialIdB64){
    LOGIN FLOW
 ============================================================ */
 function hideAllLoginSteps(){
-  ['login-step-role','login-step-admin','login-step-phone','login-step-pin','login-step-biometric'].forEach(id=>{
+  ['login-step-role','login-step-admin','login-step-phone','login-step-pin','login-step-biometric','login-step-device'].forEach(id=>{
     document.getElementById(id).style.display='none';
   });
 }
-function resetLoginFlow(){
+// If this device is already bound to a doctor/technician/helper account, skip
+// straight to the fingerprint unlock instead of asking for a phone number.
+// Returns true if it showed the device screen.
+function tryShowDeviceLogin(){
+  const saved = getDeviceAccount();
+  if(!saved) return false;
+  const doc = DB.doctors[saved.doctorId];
+  const acc = doc && doc.accounts && doc.accounts[saved.accountKey];
+  if(!acc || !acc.bound || !acc.credentialId){ clearDeviceAccount(); return false; }
+  pendingLogin = { doctorId: saved.doctorId, accountKey: saved.accountKey, account: acc, doctor: doc };
+  hideAllLoginSteps();
+  document.getElementById('device-account-label').textContent = acc.label;
+  document.getElementById('login-step-device').style.display='block';
+  return true;
+}
+function forgetDevice(){
+  clearDeviceAccount();
+  pendingLogin = null;
   hideAllLoginSteps();
   document.getElementById('login-step-role').style.display='block';
   document.getElementById('login-role').value='';
+}
+function resetLoginFlow(){
+  hideAllLoginSteps();
   pendingLogin = null;
+  if(tryShowDeviceLogin()) return;
+  document.getElementById('login-step-role').style.display='block';
+  document.getElementById('login-role').value='';
 }
 function startLoginFlow(){
   const role = document.getElementById('login-role').value;
@@ -595,6 +651,7 @@ async function verifyPinAndBind(){
     await db.ref(`doctors/${pendingLogin.doctorId}/accounts/${pendingLogin.accountKey}`).update({
       credentialId, bound:true, pinHash:null
     });
+    setDeviceAccount(pendingLogin.doctorId, pendingLogin.accountKey);
     SESSION = { role:'doctor', doctorId: pendingLogin.doctorId, accountKey: pendingLogin.accountKey, accountLabel: pendingLogin.account.label };
     enterApp();
   }catch(err){
@@ -602,11 +659,12 @@ async function verifyPinAndBind(){
   }
 }
 
-async function verifyBiometricLogin(){
-  const msg = document.getElementById('bio-msg');
+async function verifyBiometricLogin(msgElId){
+  const msg = document.getElementById(msgElId || 'bio-msg');
   try{
     msg.textContent='Waiting for fingerprint / Face ID…'; msg.className='login-msg ok';
     await verifyBiometric(pendingLogin.account.credentialId);
+    setDeviceAccount(pendingLogin.doctorId, pendingLogin.accountKey);
     SESSION = { role:'doctor', doctorId: pendingLogin.doctorId, accountKey: pendingLogin.accountKey, accountLabel: pendingLogin.account.label };
     enterApp();
   }catch(err){
@@ -1068,8 +1126,13 @@ function renderDocDashboard(){
 }
 function orderCardHtml(o){
   const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
-  const status = o.status==='pending' ? 'pending' : (balance<=0?'paid':(paid>0?'partial':'due'));
-  return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div><span class="badge ${status}">${status}</span></div>
+  const isConfirmed = o.status !== 'pending';
+  const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
+  return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <span class="badge ${isConfirmed ? 'confirmed' : 'pending'}">${isConfirmed ? 'Confirmed' : 'Pending confirmation'}</span>
+      ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
+    </div></div>
     <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
     <div class="row" style="margin-top:10px;">
       <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(orderMrpTotal(o))}</div></div>
