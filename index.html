@@ -303,7 +303,7 @@
           <span class="view-desc" id="product-count"></span>
         </div>
         <div class="table-wrap">
-          <table><thead><tr><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody id="product-table-body"></tbody></table>
+          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
       </div>
 
@@ -452,8 +452,11 @@ let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {} };
 let SESSION = null; // {role:'admin'} or {role:'doctor', doctorId, accountKey, accountLabel}
 let pendingLogin = null; // {doctorId, accountKey} while mid-login
 let currentView = null;
+let editingDoctorId = null;  // doctor whose name/incentive/due-days is being edited inline
+let editingProductId = null; // product row being edited inline
 
 function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 /* ============================================================
    REALTIME LISTENERS
@@ -469,7 +472,7 @@ function rerenderIfNeeded(){
   if(SESSION && currentView) showView(currentView, true);
 }
 
-function productsArr(){ return Object.values(DB.products || {}); }
+function productsArr(){ return Object.entries(DB.products || {}).map(([id,p])=>({id,...p})); }
 function kitsArr(){ return Object.entries(DB.kits).map(([id,k])=>({id,...k})); }
 function doctorsArr(){ return Object.entries(DB.doctors).map(([id,d])=>({id,...d})); }
 function ordersArr(){ return Object.entries(DB.orders).map(([id,o])=>({id,...o})); }
@@ -708,9 +711,57 @@ function renderProductTable(){
   const q = (document.getElementById('product-search').value||'').toLowerCase();
   const all = productsArr();
   const rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
-  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products`;
-  document.getElementById('product-table-body').innerHTML = rows.slice(0,300).map(p=>`
-    <tr><td class="num">${p.code}</td><td>${p.name}</td><td>${p.category}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">No matches.</td></tr>`;
+  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products` + (rows.length>300 ? ' (showing first 300 — narrow your search to see the rest)' : '');
+  document.getElementById('product-table-body').innerHTML = rows.slice(0,300).map((p,i)=>{
+    if(editingProductId === p.id){
+      return `<tr>
+        <td class="num">${i+1}</td>
+        <td><input type="text" id="edit-p-code-${p.id}" value="${escapeAttr(p.code)}" style="width:100%;"></td>
+        <td><input type="text" id="edit-p-name-${p.id}" value="${escapeAttr(p.name)}" style="width:100%;"></td>
+        <td><input type="text" id="edit-p-category-${p.id}" value="${escapeAttr(p.category)}" style="width:100%;"></td>
+        <td style="text-align:right;"><input type="number" id="edit-p-mrp-${p.id}" value="${p.mrp}" style="width:100px; text-align:right;"></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-sm" onclick="saveProduct('${p.id}')">Save</button>
+          <button class="btn btn-outline btn-sm" onclick="cancelEditProduct()">Cancel</button>
+        </td>
+      </tr>`;
+    }
+    return `<tr>
+      <td class="num">${i+1}</td>
+      <td class="num">${p.code}</td>
+      <td>${p.name}</td>
+      <td>${p.category}</td>
+      <td class="num" style="text-align:right;">${money(p.mrp)}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-outline btn-sm" onclick="startEditProduct('${p.id}')">Edit</button>
+        <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" class="empty">No matches.</td></tr>`;
+}
+function startEditProduct(id){ editingProductId = id; renderProductTable(); }
+function cancelEditProduct(){ editingProductId = null; renderProductTable(); }
+async function saveProduct(id){
+  const code = document.getElementById(`edit-p-code-${id}`).value.trim();
+  const name = document.getElementById(`edit-p-name-${id}`).value.trim();
+  const category = document.getElementById(`edit-p-category-${id}`).value.trim();
+  const mrp = parseFloat(document.getElementById(`edit-p-mrp-${id}`).value) || 0;
+  if(!code || !name){ alert('Code and name are required.'); return; }
+  try{
+    await db.ref(`products/${id}`).set({ code, name, category, mrp });
+    editingProductId = null;
+  }catch(err){
+    alert('Could not save changes: ' + err.message);
+  }
+}
+async function deleteProduct(id){
+  const p = productsArr().find(x=>x.id===id);
+  if(!confirm(`Delete product "${p ? p.name : id}"? This cannot be undone.`)) return;
+  try{
+    await db.ref('products/'+id).remove();
+  }catch(err){
+    alert('Could not delete: ' + err.message);
+  }
 }
 async function parseAndImportCsv(raw){
   const statusEl = document.getElementById('import-status');
@@ -853,11 +904,52 @@ function renderDoctorsList(){
         ${acc.bound ? `<button class="btn btn-outline btn-sm" onclick="resetBinding('${d.id}','${key}')">Reset</button>` : ''}
       </div>`;
     }).join('');
+
+    const head = editingDoctorId === d.id ? `
+      <div class="manifest-head" style="flex-wrap:wrap; gap:8px; align-items:center;">
+        <input type="text" id="edit-doc-name-${d.id}" value="${escapeAttr(d.name)}" placeholder="Doctor name" style="max-width:220px;">
+        <input type="number" id="edit-doc-incentive-${d.id}" value="${d.incentivePct}" placeholder="Incentive %" style="max-width:110px;">
+        <input type="number" id="edit-doc-duedays-${d.id}" value="${d.dueDays}" placeholder="Due days" style="max-width:110px;">
+        <button class="btn btn-sm" onclick="saveDoctorMeta('${d.id}')">Save</button>
+        <button class="btn btn-outline btn-sm" onclick="cancelEditDoctor()">Cancel</button>
+      </div>` : `
+      <div class="manifest-head">
+        <div><span class="kit-name">${d.name}</span></div>
+        <span class="tray-dots">${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span>
+      </div>
+      <div style="display:flex; gap:8px; margin:6px 0 12px;">
+        <button class="btn btn-outline btn-sm" onclick="startEditDoctor('${d.id}')">Edit name / incentive / due days</button>
+        <button class="btn btn-outline btn-sm" onclick="deleteDoctor('${d.id}')" style="color:var(--rust);">Delete doctor</button>
+      </div>`;
+
     return `<div class="manifest">
-      <div class="manifest-head"><div><span class="kit-name">${d.name}</span></div><span class="tray-dots">${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span></div>
+      ${head}
       ${rows}
     </div>`;
   }).join('') || `<div class="empty">No doctors yet.</div>`;
+}
+function startEditDoctor(id){ editingDoctorId = id; renderDoctorsList(); }
+function cancelEditDoctor(){ editingDoctorId = null; renderDoctorsList(); }
+async function saveDoctorMeta(id){
+  const name = document.getElementById(`edit-doc-name-${id}`).value.trim();
+  const incentivePct = parseFloat(document.getElementById(`edit-doc-incentive-${id}`).value) || 0;
+  const dueDays = parseInt(document.getElementById(`edit-doc-duedays-${id}`).value) || 30;
+  if(!name){ alert('Doctor name is required.'); return; }
+  try{
+    await db.ref(`doctors/${id}`).update({ name, incentivePct, dueDays });
+    editingDoctorId = null;
+  }catch(err){
+    alert('Could not save changes: ' + err.message);
+  }
+}
+async function deleteDoctor(id){
+  const d = findDoc(id);
+  if(!confirm(`Delete "${d ? d.name : id}" and all 3 of their logins (Doctor, Technician, Helper)? This cannot be undone. Past orders will keep showing the doctor's name but the account itself will be gone.`)) return;
+  try{
+    await db.ref('doctors/'+id).remove();
+  }catch(err){
+    alert('Could not delete: ' + err.message);
+  }
 }
 
 /* ============================================================
