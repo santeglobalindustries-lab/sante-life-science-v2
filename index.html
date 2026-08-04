@@ -380,7 +380,7 @@
 
       <!-- ===== DOCTOR: New Order ===== -->
       <div class="view" id="v-doc-neworder">
-        <div class="view-header"><div class="eyebrow">Book</div><div class="view-title serif">New Order</div><div class="view-desc">Pick a kit template, customize it, and set the date &amp; time.</div></div>
+        <div class="view-header"><div class="eyebrow">Book</div><div class="view-title serif" id="order-form-title">New Order</div><div class="view-desc" id="order-form-desc">Pick a kit template, customize it, and set the date &amp; time.</div></div>
         <div class="panel">
           <div class="panel-title">1. Choose a kit template (optional)</div>
           <select id="order-kit-select" onchange="applyKitTemplate()"><option value="">— Build from scratch —</option></select>
@@ -400,7 +400,10 @@
             <div><label class="small">Time</label><input type="time" id="order-time"></div>
           </div>
         </div>
-        <button class="btn" onclick="placeOrder()">Place order</button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn" id="place-order-btn" onclick="placeOrder()">Place order</button>
+          <button class="btn btn-outline" id="cancel-edit-order-btn" onclick="cancelEditOrder()" style="display:none;">Cancel edit</button>
+        </div>
       </div>
 
       <!-- ===== DOCTOR: My Orders ===== -->
@@ -462,6 +465,7 @@ let pendingLogin = null; // {doctorId, accountKey} while mid-login
 let currentView = null;
 let editingDoctorId = null;  // doctor whose name/incentive/due-days is being edited inline
 let editingProductId = null; // product row being edited inline
+let editingOrderId = null;   // a doctor's own pending order being edited, or null for a fresh order
 
 function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -728,6 +732,12 @@ function showView(id, silent){
 ============================================================ */
 const money = n => '₹' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:0});
 const findDoc = id => DB.doctors[id] ? {id, ...DB.doctors[id]} : null;
+// Fallback used whenever an order references a doctor that no longer exists
+// (e.g. deleted from Admin → Doctors). Without this, a single orphaned order
+// would throw mid-render and blank out the ENTIRE orders/dashboard/ledger list.
+const UNKNOWN_DOC = { name: 'Unknown doctor (deleted)', incentivePct: 0, dueDays: 30,
+  accounts: { doctor:{phone:'',label:'Doctor'}, technician:{phone:'',label:'Technician'}, helper:{phone:'',label:'Helper'} } };
+const findDocSafe = id => findDoc(id) || UNKNOWN_DOC;
 function sanitizeKey(code){
   return String(code).replace(/\./g,'_d_').replace(/#/g,'_h_').replace(/\$/g,'_dl_').replace(/\//g,'_s_').replace(/\[/g,'_lb_').replace(/\]/g,'_rb_');
 }
@@ -755,7 +765,7 @@ function renderAdminDashboard(){
     <div class="stat-card"><div class="label">Total incentive</div><div class="value amber">${money(totalIncentive)}</div></div>
     <div class="stat-card"><div class="label">Outstanding dues</div><div class="value ${totalDue>0?'':'sage'}">${money(totalDue)}</div></div>`;
   document.getElementById('admin-pending-orders').innerHTML = pending.length ? pending.map(o=>{
-    const doc=findDoc(o.doctorId);
+    const doc=findDocSafe(o.doctorId);
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge pending">Pending</span></div>
       <div class="manifest-items">${o.productCodes.length} items · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}</div>
       <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">Review in Orders →</button></div></div>`;
@@ -1002,7 +1012,9 @@ async function saveDoctorMeta(id){
 }
 async function deleteDoctor(id){
   const d = findDoc(id);
-  if(!confirm(`Delete "${d ? d.name : id}" and all 3 of their logins (Doctor, Technician, Helper)? This cannot be undone. Past orders will keep showing the doctor's name but the account itself will be gone.`)) return;
+  const orderCount = ordersArr().filter(o=>o.doctorId===id).length;
+  const orderWarning = orderCount ? `\n\nThis doctor has ${orderCount} order${orderCount===1?'':'s'} on record. Those orders will stay in Orders/Ledger but will show as "Unknown doctor (deleted)".` : '';
+  if(!confirm(`Delete "${d ? d.name : id}" and all 3 of their logins (Doctor, Technician, Helper)? This cannot be undone.${orderWarning}`)) return;
   try{
     await db.ref('doctors/'+id).remove();
   }catch(err){
@@ -1016,11 +1028,11 @@ async function deleteDoctor(id){
 function renderAdminOrders(){
   const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-orders-list').innerHTML = list.length ? list.map(o=>{
-    const doc = findDoc(o.doctorId);
+    const doc = findDocSafe(o.doctorId);
     const billPhone = doc.accounts.doctor.phone;
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
-    const waLink = `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`;
+    const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${o.status}">${o.status}</span></div>
       <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
       <div class="row" style="margin-top:12px;">
@@ -1031,7 +1043,7 @@ function renderAdminOrders(){
       <div class="whatsapp-box">${msg}</div>
       <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         ${o.status==='pending' ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
-        <a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>
+        ${waLink ? `<a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">No orders yet.</div>`;
 }
@@ -1044,7 +1056,7 @@ let payoutDraft = {};
 function renderAdminLedger(){
   const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-ledger-list').innerHTML = list.length ? list.map(o=>{
-    const doc=findDoc(o.doctorId);
+    const doc=findDocSafe(o.doctorId);
     const disc=orderDiscounted(o), inc=orderIncentive(o), paid=orderPaid(o), balance=disc-paid;
     const paidStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial':'due');
     const existingPayouts = payoutsArr().filter(p=>p.orderId===o.id);
@@ -1084,24 +1096,25 @@ async function recordPayment(orderId){
   if(!amt || amt<=0) return;
   const o = ordersArr().find(x=>x.id===orderId);
   await db.ref(`orders/${orderId}/payments/${uid('pay')}`).set({ amount:amt, date:new Date().toISOString().slice(0,10) });
-  const doc = findDoc(o.doctorId);
+  const doc = findDocSafe(o.doctorId);
   const billPhone = doc.accounts.doctor.phone;
   const newPaid = orderPaid(o)+amt;
   const balance = orderDiscounted(o) - newPaid;
   const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)}.\nRemaining balance on this order: ${money(Math.max(balance,0))}\n— Sante Life Science`;
-  window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  else alert('Payment recorded. (No phone on file for this doctor, so no WhatsApp receipt was sent.)');
 }
 async function payIncentive(orderId){
   const rows = (payoutDraft[orderId]||[]).filter(r=>r.name && r.amount>0);
   if(!rows.length) return;
   const o = ordersArr().find(x=>x.id===orderId);
-  const doc = findDoc(o.doctorId);
+  const doc = findDocSafe(o.doctorId);
   await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:new Date().toISOString().slice(0,10) });
   const total = rows.reduce((s,r)=>s+r.amount,0);
   const breakdown = rows.map(r=>`${money(r.amount)} to ${r.name}`).join(', ');
   const billPhone = doc.accounts.doctor.phone;
   const msg = `Hello ${doc.name}, your incentive of ${money(total)} has been paid.\nDetails: ${breakdown}\n— Sante Life Science`;
-  window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   delete payoutDraft[orderId];
 }
 
@@ -1111,6 +1124,7 @@ async function payIncentive(orderId){
 function myOrders(){ return ordersArr().filter(o=>o.doctorId===SESSION.doctorId); }
 function renderDocDashboard(){
   const doc = findDoc(SESSION.doctorId);
+  if(!doc){ alert('This account has been removed by the Sante team.'); logout(); return; }
   document.getElementById('doc-dash-title').textContent = `Welcome, ${doc.name}`;
   const orders = myOrders();
   const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
@@ -1139,7 +1153,12 @@ function orderCardHtml(o){
       <div class="stat-card" style="padding:10px;"><div class="label">Billed</div><div class="value amber" style="font-size:14px;">${money(disc)}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
-    </div></div>`;
+    </div>
+    ${!isConfirmed ? `<div style="margin-top:10px; display:flex; gap:8px;">
+      <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit</button>
+      <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>
+    </div>` : `<div class="hint" style="margin:10px 0 0; font-size:11px;">This order is confirmed and locked — contact the Sante team for any changes.</div>`}
+    </div>`;
 }
 
 /* ============================================================
@@ -1147,10 +1166,17 @@ function orderCardHtml(o){
 ============================================================ */
 let orderDraftCodes = [];
 function renderNewOrderView(){
-  orderDraftCodes = [];
+  const editing = editingOrderId ? myOrders().find(o=>o.id===editingOrderId) : null;
+  if(editingOrderId && !editing){ editingOrderId = null; } // it vanished or was confirmed elsewhere meanwhile
+  orderDraftCodes = editing ? [...editing.productCodes] : [];
   document.getElementById('order-kit-select').innerHTML = `<option value="">— Build from scratch —</option>` + kitsArr().map(k=>`<option value="${k.id}">${k.name}</option>`).join('');
-  document.getElementById('order-date').value = new Date().toISOString().slice(0,10);
-  document.getElementById('order-time').value = '09:00';
+  document.getElementById('order-kit-select').value = '';
+  document.getElementById('order-date').value = editing ? editing.date : new Date().toISOString().slice(0,10);
+  document.getElementById('order-time').value = editing ? editing.time : '09:00';
+  document.getElementById('order-form-title').textContent = editing ? 'Edit Order' : 'New Order';
+  document.getElementById('order-form-desc').textContent = editing ? "Update the items, date, or time — the Sante team will see your changes. This is only possible while the order is still pending confirmation." : 'Pick a kit template, customize it, and set the date & time.';
+  document.getElementById('place-order-btn').textContent = editing ? 'Save changes' : 'Place order';
+  document.getElementById('cancel-edit-order-btn').style.display = editing ? 'inline-block' : 'none';
   renderOrderPills();
 }
 function applyKitTemplate(){
@@ -1178,6 +1204,25 @@ async function placeOrder(){
   const date = document.getElementById('order-date').value;
   const time = document.getElementById('order-time').value;
   if(!date || !time){ alert('Set a date and time.'); return; }
+  if(editingOrderId){
+    const o = myOrders().find(x=>x.id===editingOrderId);
+    if(!o || o.status !== 'pending'){
+      alert('This order can no longer be edited — it has already been confirmed.');
+      editingOrderId = null;
+      showView('doc-orders');
+      return;
+    }
+    try{
+      await db.ref('orders/'+editingOrderId).update({ productCodes:[...orderDraftCodes], date, time });
+      alert('Order updated.');
+    }catch(err){
+      alert('Could not save changes: ' + err.message);
+      return;
+    }
+    editingOrderId = null;
+    showView('doc-orders');
+    return;
+  }
   await db.ref('orders/' + uid('ord')).set({
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
@@ -1186,6 +1231,28 @@ async function placeOrder(){
   });
   alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
   showView('doc-orders');
+}
+function editOrder(id){
+  const o = myOrders().find(x=>x.id===id);
+  if(!o) return;
+  if(o.status !== 'pending'){ alert('This order has already been confirmed and can no longer be edited.'); return; }
+  editingOrderId = id;
+  showView('doc-neworder');
+}
+function cancelEditOrder(){
+  editingOrderId = null;
+  showView('doc-neworder');
+}
+async function deleteMyOrder(id){
+  const o = myOrders().find(x=>x.id===id);
+  if(!o) return;
+  if(o.status !== 'pending'){ alert('This order has already been confirmed and can no longer be deleted.'); return; }
+  if(!confirm('Delete this order? This cannot be undone.')) return;
+  try{
+    await db.ref('orders/'+id).remove();
+  }catch(err){
+    alert('Could not delete: ' + err.message);
+  }
 }
 
 /* ============================================================
