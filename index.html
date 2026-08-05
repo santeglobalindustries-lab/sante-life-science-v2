@@ -527,6 +527,9 @@ function clearDeviceAccount(){
   try{ localStorage.removeItem(DEVICE_ACCOUNT_KEY); }catch(e){}
 }
 
+function webauthnSupported(){
+  return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create && navigator.credentials.get);
+}
 async function registerBiometric(label){
   const challenge = crypto.getRandomValues(new Uint8Array(32));
   const userId = crypto.getRandomValues(new Uint8Array(16));
@@ -649,6 +652,11 @@ async function verifyPinAndBind(){
   if(!pin){ msg.textContent='Enter the one-time password.'; msg.className='login-msg err'; return; }
   const hash = await sha256(pin);
   if(hash !== pendingLogin.account.pinHash){ msg.textContent='Incorrect one-time password.'; msg.className='login-msg err'; return; }
+  if(!webauthnSupported()){
+    msg.textContent="This browser/phone doesn't support fingerprint or Face ID login. Please try again on an up-to-date Chrome or Safari, or ask the Sante team for help.";
+    msg.className='login-msg err';
+    return;
+  }
   try{
     msg.textContent='Confirm with your fingerprint / Face ID…'; msg.className='login-msg ok';
     const credentialId = await registerBiometric(pendingLogin.account.label);
@@ -665,6 +673,11 @@ async function verifyPinAndBind(){
 
 async function verifyBiometricLogin(msgElId){
   const msg = document.getElementById(msgElId || 'bio-msg');
+  if(!webauthnSupported()){
+    msg.textContent="This browser/phone doesn't support fingerprint or Face ID login. Please try again on an up-to-date Chrome or Safari, or ask the Sante team for help.";
+    msg.className='login-msg err';
+    return;
+  }
   try{
     msg.textContent='Waiting for fingerprint / Face ID…'; msg.className='login-msg ok';
     await verifyBiometric(pendingLogin.account.credentialId);
@@ -1292,6 +1305,22 @@ function renderDocLedger(){
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
+
+// Mobile browsers (iOS Safari especially, and increasingly Android Chrome)
+// often "close" a tab/app by freezing it exactly as it looked and restoring
+// that frozen snapshot when reopened — no JavaScript re-runs at all. Without
+// this, someone who closed the app while sitting on the phone-number step
+// would reopen it and see that same stale step, instead of the fingerprint
+// unlock screen their saved device account entitles them to. Re-checking on
+// 'pageshow' (covers bfcache restores) and on the tab becoming visible again
+// (covers backgrounding on Android) fixes that on every browser.
+function recheckLoginScreen(){
+  if(!SESSION){ resetLoginFlow(); }
+}
+window.addEventListener('pageshow', recheckLoginScreen);
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible') recheckLoginScreen();
+});
 </script>
 </body>
 </html>
