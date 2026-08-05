@@ -568,14 +568,26 @@ function hideAllLoginSteps(){
 }
 // If this device is already bound to a doctor/technician/helper account, skip
 // straight to the fingerprint unlock instead of asking for a phone number.
-// Returns true if it showed the device screen.
-function tryShowDeviceLogin(){
+// Does a fresh one-time read from Firebase rather than trusting the cached
+// DB.doctors object, because after a phone has been backgrounded for a while
+// the realtime listener can take a moment (or need a reconnect) to catch up —
+// this way the correct screen shows up immediately and reliably every time,
+// on every browser. Returns true if it showed the device screen.
+async function tryShowDeviceLogin(){
   const saved = getDeviceAccount();
   if(!saved) return false;
-  const doc = DB.doctors[saved.doctorId];
+  let doc = DB.doctors[saved.doctorId];
+  if(!doc){
+    try{
+      const snap = await db.ref(`doctors/${saved.doctorId}`).once('value');
+      doc = snap.val();
+      if(doc) DB.doctors[saved.doctorId] = doc;
+    }catch(e){ return false; } // offline / not authenticated yet — fall back to manual login
+  }
   const acc = doc && doc.accounts && doc.accounts[saved.accountKey];
   if(!acc || !acc.bound || !acc.credentialId){ clearDeviceAccount(); return false; }
-  pendingLogin = { doctorId: saved.doctorId, accountKey: saved.accountKey, account: acc, doctor: doc };
+  if(SESSION) return false; // logged in already in the meantime — don't clobber the app view
+  pendingLogin = { doctorId: saved.doctorId, accountKey: saved.accountKey, account: acc, doctor: {id:saved.doctorId, ...doc} };
   hideAllLoginSteps();
   document.getElementById('device-account-label').textContent = acc.label;
   document.getElementById('login-step-device').style.display='block';
@@ -588,12 +600,12 @@ function forgetDevice(){
   document.getElementById('login-step-role').style.display='block';
   document.getElementById('login-role').value='';
 }
-function resetLoginFlow(){
+async function resetLoginFlow(){
   hideAllLoginSteps();
   pendingLogin = null;
-  if(tryShowDeviceLogin()) return;
   document.getElementById('login-step-role').style.display='block';
   document.getElementById('login-role').value='';
+  await tryShowDeviceLogin(); // swaps to the unlock screen itself if applicable
 }
 function startLoginFlow(){
   const role = document.getElementById('login-role').value;
