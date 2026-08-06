@@ -1115,10 +1115,11 @@ function renderAdminLedger(){
     const doc=findDocSafe(o.doctorId);
     const disc=orderDiscounted(o), inc=orderIncentive(o), paid=orderPaid(o), balance=disc-paid;
     const paidStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial':'due');
-    const existingPayouts = payoutsArr().filter(p=>p.orderId===o.id);
+    const existingPayouts = payoutsArr().filter(p=>p.orderId===o.id).sort((a,b)=> a.date<b.date?1:-1);
     const incentivePaid = existingPayouts.reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
+    const incentiveRemaining = inc - incentivePaid;
     const payments = paymentsArr(o);
-    if(!payoutDraft[o.id]) payoutDraft[o.id] = [{name:doc.name, amount:inc}];
+    if(!payoutDraft[o.id]) payoutDraft[o.id] = [{name:doc.name, amount: Math.max(incentiveRemaining,0)}];
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date}</span></div><span class="badge ${paidStatus}">${paidStatus}</span></div>
       <div class="row" style="margin-top:10px;">
         <div class="stat-card" style="padding:12px;"><div class="label">Bill</div><div class="value" style="font-size:15px;">${money(disc)}</div></div>
@@ -1140,6 +1141,13 @@ function renderAdminLedger(){
       <div class="row"><div><input type="number" placeholder="Amount received (₹)" id="pay-amt-${o.id}"></div><div><button class="btn btn-sm" onclick="recordPayment('${o.id}')">Record + WhatsApp receipt</button></div></div>
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Incentive payout split</div>
+      <div class="hint" style="margin:0 0 6px;">Incentive on this order: <b>${money(inc)}</b> · already paid out: <b style="color:var(--sage)">${money(incentivePaid)}</b> · remaining: <b style="color:${incentiveRemaining>0?'var(--rust)':'var(--sage)'}">${money(incentiveRemaining)}</b></div>
+      ${existingPayouts.length ? `<div class="payment-history" style="margin-bottom:10px;">
+        ${existingPayouts.map(p=>`<div class="payment-row" style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:13px;">
+          <span>${p.date} · ${p.payees.map(x=>`${money(x.amount)} to ${x.name}`).join(', ')}</span>
+          <button class="btn btn-outline btn-sm" onclick="deletePayout('${p.id}')" style="color:var(--rust);">Remove</button>
+        </div>`).join('')}
+      </div>` : ''}
       <div id="payout-rows-${o.id}">
         ${payoutDraft[o.id].map((row,i)=>`<div class="payout-row">
           <input type="text" placeholder="Payee name" value="${row.name}" oninput="updatePayoutDraft('${o.id}',${i},'name',this.value)">
@@ -1152,6 +1160,14 @@ function renderAdminLedger(){
         <button class="btn btn-sm" onclick="payIncentive('${o.id}')">Mark incentive paid + WhatsApp</button>
       </div></div>`;
   }).join('') : `<div class="empty">No orders to settle yet.</div>`;
+}
+async function deletePayout(payoutId){
+  if(!confirm('Remove this incentive payout record? Use this to undo a duplicate or mistaken entry. This cannot be undone.')) return;
+  try{
+    await db.ref('payouts/'+payoutId).remove();
+  }catch(err){
+    alert('Could not remove payout: ' + err.message);
+  }
 }
 async function deletePayment(orderId, paymentId){
   if(!confirm('Remove this payment entry? Use this to fix a duplicate or mistaken entry. This cannot be undone.')) return;
@@ -1194,11 +1210,18 @@ async function payIncentive(orderId){
   if(!rows.length) return;
   const o = ordersArr().find(x=>x.id===orderId);
   const doc = findDocSafe(o.doctorId);
-  await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:new Date().toISOString().slice(0,10) });
+  const inc = orderIncentive(o);
+  const alreadyPaid = payoutsArr().filter(p=>p.orderId===orderId).reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
   const total = rows.reduce((s,r)=>s+r.amount,0);
+  const remaining = inc - alreadyPaid;
+  if(total > remaining){
+    const over = total - remaining;
+    if(!confirm(`This order's total incentive is ${money(inc)}, and ${money(alreadyPaid)} has already been paid out (${money(remaining)} remaining). Recording ${money(total)} now would pay ${money(over)} more than the order's incentive. Continue anyway?`)) return;
+  }
+  await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:new Date().toISOString().slice(0,10) });
   const breakdown = rows.map(r=>`${money(r.amount)} to ${r.name}`).join(', ');
   const billPhone = doc.accounts.doctor.phone;
-  const msg = `Hello ${doc.name}, your incentive of ${money(total)} has been paid.\nDetails: ${breakdown}\n— Sante Life Science`;
+  const msg = `Hello ${doc.name}, an incentive payout of ${money(total)} has been made.\nDetails: ${breakdown}\n— Sante Life Science`;
   if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   delete payoutDraft[orderId];
 }
