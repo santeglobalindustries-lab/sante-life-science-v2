@@ -895,6 +895,25 @@ function detectDelimiter(sampleLine){
   const commaCount = (sampleLine.match(/,/g)||[]).length;
   return tabCount > commaCount ? '\t' : ',';
 }
+function stripThousandsCommas(line){
+  // A price like "4,087.50" or "18,500" uses a comma as a thousands
+  // separator, not a column separator — but to a comma-splitting parser it
+  // looks identical to one, and silently truncates the price to just its
+  // first digit(s) ("4,087.50" → price read as "4"). This is why some
+  // already-imported products are showing drastically wrong prices. Strip
+  // commas that sit between digits in a 3-digit group (outside quotes)
+  // before splitting on columns.
+  let out = '', inQuotes = false;
+  for(let i=0;i<line.length;i++){
+    const ch = line[i];
+    if(ch === '"') inQuotes = !inQuotes;
+    if(ch === ',' && !inQuotes && /\d/.test(line[i-1]||'') && /^\d{3}(\D|$)/.test(line.slice(i+1))){
+      continue; // drop this grouping comma
+    }
+    out += ch;
+  }
+  return out;
+}
 function splitCsvLine(line, delimiter){
   // A real CSV/TSV field splitter that respects "quoted fields, like this"
   // containing the delimiter itself. Without this, any product name with a
@@ -923,6 +942,7 @@ async function parseAndImportCsv(raw){
   let lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   if(!lines.length) return;
   const delimiter = detectDelimiter(lines[0]);
+  if(delimiter === ',') lines = lines.map(stripThousandsCommas);
   // Drop a header row if the first line looks like column labels rather than data.
   if(/code/i.test(lines[0]) && /name|product/i.test(lines[0]) && /mrp|price/i.test(lines[0])){
     lines = lines.slice(1);
