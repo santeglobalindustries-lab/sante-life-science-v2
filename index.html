@@ -887,38 +887,84 @@ async function deleteProduct(id){
     alert('Could not delete: ' + err.message);
   }
 }
+function detectDelimiter(sampleLine){
+  // Copy-pasting cells directly out of Excel puts TABS between columns, not
+  // commas — only a real exported .csv file uses commas. Auto-detecting this
+  // means both "paste from Excel" and "upload the .csv" work correctly.
+  const tabCount = (sampleLine.match(/\t/g)||[]).length;
+  const commaCount = (sampleLine.match(/,/g)||[]).length;
+  return tabCount > commaCount ? '\t' : ',';
+}
+function splitCsvLine(line, delimiter){
+  // A real CSV/TSV field splitter that respects "quoted fields, like this"
+  // containing the delimiter itself. Without this, any product name with a
+  // comma in it (extremely common in a hardware catalog — e.g. "Plate,
+  // Locking, 3.5mm") silently breaks column alignment and the whole row
+  // gets skipped, which is what was eating most of a 7,890-row import.
+  const out = [];
+  let cur = '', inQuotes = false;
+  for(let i=0;i<line.length;i++){
+    const ch = line[i];
+    if(inQuotes){
+      if(ch === '"'){ if(line[i+1] === '"'){ cur+='"'; i++; } else { inQuotes=false; } }
+      else cur+=ch;
+    } else {
+      if(ch === '"') inQuotes = true;
+      else if(ch === delimiter){ out.push(cur); cur=''; }
+      else cur+=ch;
+    }
+  }
+  out.push(cur);
+  return out.map(s=>s.trim().replace(/^"|"$/g,''));
+}
 async function parseAndImportCsv(raw){
   const statusEl = document.getElementById('import-status');
   if(!raw || !raw.trim()) return;
-  let lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  let lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) return;
+  const delimiter = detectDelimiter(lines[0]);
   // Drop a header row if the first line looks like column labels rather than data.
-  if(lines.length && /code/i.test(lines[0]) && /name/i.test(lines[0]) && /mrp/i.test(lines[0])){
+  if(/code/i.test(lines[0]) && /name|product/i.test(lines[0]) && /mrp|price/i.test(lines[0])){
     lines = lines.slice(1);
   }
   let added=0, updated=0, skipped=0;
   const updates = {};
+  const skippedSamples = [];
   const existingCodes = new Set(productsArr().map(p=>p.code));
   lines.forEach(line=>{
-    const parts = line.split(',').map(s=>s.trim());
-    if(parts.length<4){ skipped++; return; }
-    const [code,name,category,mrpStr] = parts;
-    const mrp = Math.round(parseFloat(mrpStr.replace(/[^\d.]/g,'')));
-    if(!code || isNaN(mrp)){ skipped++; return; }
+    const parts = splitCsvLine(line, delimiter);
+    if(parts.length<4){ skipped++; if(skippedSamples.length<5) skippedSamples.push(line.slice(0,60)); return; }
+    const [code,name,category,...rest] = parts;
+    const mrpStr = rest[rest.length-1]; // last field, in case anything earlier still had a stray delimiter
+    const mrp = Math.round(parseFloat(String(mrpStr).replace(/[^\d.\-]/g,'')));
+    if(!code || !name || isNaN(mrp)){ skipped++; if(skippedSamples.length<5) skippedSamples.push(line.slice(0,60)); return; }
     if(existingCodes.has(code)) updated++; else added++;
-    updates[sanitizeKey(code)] = { code, name, category, mrp };
+    existingCodes.add(code);
+    updates[sanitizeKey(code)] = { code, name, category: category||'', mrp };
   });
   if(Object.keys(updates).length===0){
     statusEl.style.color='var(--rust)';
     statusEl.textContent = `Nothing to import — check the format is code,name,category,mrp (${skipped} rows skipped).`;
     return;
   }
+  // Write in batches of 500 so one huge multi-thousand-row update can't
+  // silently time out or fail partway through on a slow connection — and so
+  // you can see progress instead of staring at a frozen screen.
+  const entries = Object.entries(updates);
+  const BATCH = 500;
+  statusEl.style.color='var(--amber-bright)';
   try{
-    await db.ref('products').update(updates);
+    for(let i=0;i<entries.length;i+=BATCH){
+      const batch = Object.fromEntries(entries.slice(i, i+BATCH));
+      await db.ref('products').update(batch);
+      statusEl.textContent = `Importing… ${Math.min(i+BATCH, entries.length)} of ${entries.length}`;
+    }
     statusEl.style.color='var(--sage)';
-    statusEl.textContent = `Added ${added}, updated ${updated}${skipped?`, skipped ${skipped}`:''}.`;
+    statusEl.textContent = `Added ${added}, updated ${updated}${skipped?`, skipped ${skipped}`:''}.`
+      + (skippedSamples.length ? ` Example skipped row(s) — check the format: ${skippedSamples.join('  |  ')}` : '');
   }catch(err){
     statusEl.style.color='var(--rust)';
-    statusEl.textContent = 'Import failed: ' + err.message + ' — if this says "permission_denied", enable Anonymous sign-in in Firebase and refresh.';
+    statusEl.textContent = 'Import failed partway through: ' + err.message + ' — if this says "permission_denied", enable Anonymous sign-in in Firebase and refresh. Rows already written are saved; just re-run the import to pick up where it left off.';
   }
 }
 async function importCsv(){
