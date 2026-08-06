@@ -189,6 +189,11 @@
     <div class="brand-title">Kit &amp; Ledger Desk</div>
     <div class="brand-sub" id="login-sub">Instrument kit booking, ordering, and doctor accounts.</div>
 
+    <!-- Step -1: checking whether this device is already remembered (default on load) -->
+    <div id="login-step-checking" style="text-align:center; padding:10px 0 4px;">
+      <div class="hint" style="margin:0;">Checking this device…</div>
+    </div>
+
     <!-- Step 0b: this device already belongs to someone — skip straight to fingerprint -->
     <div id="login-step-device" style="display:none;">
       <div class="hint" style="margin-top:0; margin-bottom:16px;">This device is set up for <b id="device-account-label" class="serif" style="color:var(--amber-bright); font-style:normal;"></b>. Unlock with fingerprint / Face ID to continue.</div>
@@ -198,7 +203,7 @@
     </div>
 
     <!-- Step 0: choose role -->
-    <div id="login-step-role">
+    <div id="login-step-role" style="display:none;">
       <div class="field">
         <label>Sign in as</label>
         <select id="login-role">
@@ -466,6 +471,7 @@ let currentView = null;
 let editingDoctorId = null;  // doctor whose name/incentive/due-days is being edited inline
 let editingProductId = null; // product row being edited inline
 let editingOrderId = null;   // a doctor's own pending order being edited, or null for a fresh order
+let doctorsDataLoaded = false; // true once we've received at least one real doctors snapshot from Firebase
 
 function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -478,12 +484,8 @@ function attachListeners(){
   db.ref('kits').on('value', snap => { DB.kits = snap.val() || {}; rerenderIfNeeded(); });
   db.ref('doctors').on('value', snap => {
     DB.doctors = snap.val() || {};
+    doctorsDataLoaded = true;
     rerenderIfNeeded();
-    // Still sitting at the login screen (not signed in) and haven't already
-    // navigated past the role-choice step? See if this device is remembered.
-    if(!SESSION && document.getElementById('login-step-role').style.display !== 'none'){
-      tryShowDeviceLogin();
-    }
   });
   db.ref('orders').on('value', snap => { DB.orders = snap.val() || {}; rerenderIfNeeded(); });
   db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
@@ -562,50 +564,67 @@ async function verifyBiometric(credentialIdB64){
    LOGIN FLOW
 ============================================================ */
 function hideAllLoginSteps(){
-  ['login-step-role','login-step-admin','login-step-phone','login-step-pin','login-step-biometric','login-step-device'].forEach(id=>{
+  ['login-step-checking','login-step-role','login-step-admin','login-step-phone','login-step-pin','login-step-biometric','login-step-device'].forEach(id=>{
     document.getElementById(id).style.display='none';
   });
+}
+function showRoleStep(){
+  hideAllLoginSteps();
+  document.getElementById('login-step-role').style.display='block';
+  document.getElementById('login-role').value='';
 }
 // If this device is already bound to a doctor/technician/helper account, skip
 // straight to the fingerprint unlock instead of asking for a phone number.
 // Does a fresh one-time read from Firebase rather than trusting the cached
 // DB.doctors object, because after a phone has been backgrounded for a while
-// the realtime listener can take a moment (or need a reconnect) to catch up —
-// this way the correct screen shows up immediately and reliably every time,
-// on every browser. Returns true if it showed the device screen.
-async function tryShowDeviceLogin(){
+// the realtime connection can take several seconds to reconnect. While that
+// read is in flight we show a dedicated "Checking this device…" screen (not
+// the phone-number screen) so there's no window for someone to start typing
+// a number against still-stale data — that race was causing the false
+// "no account found" errors. A hard timeout falls back to manual login if
+// we're offline or something's stuck, so nobody gets stranded.
+async function checkLoginOnResume(){
+  if(SESSION) return;
+  hideAllLoginSteps();
+  document.getElementById('login-step-checking').style.display='block';
   const saved = getDeviceAccount();
-  if(!saved) return false;
-  let doc = DB.doctors[saved.doctorId];
-  if(!doc){
+  if(!saved){ showRoleStep(); return; }
+
+  const TIMEOUT = Symbol('timeout');
+  const timeoutP = new Promise(res => setTimeout(()=>res(TIMEOUT), 8000));
+  const fetchP = (async () => {
     try{
       const snap = await db.ref(`doctors/${saved.doctorId}`).once('value');
-      doc = snap.val();
-      if(doc) DB.doctors[saved.doctorId] = doc;
-    }catch(e){ return false; } // offline / not authenticated yet — fall back to manual login
-  }
-  const acc = doc && doc.accounts && doc.accounts[saved.accountKey];
-  if(!acc || !acc.bound || !acc.credentialId){ clearDeviceAccount(); return false; }
-  if(SESSION) return false; // logged in already in the meantime — don't clobber the app view
+      return snap.val();
+    }catch(e){ return null; }
+  })();
+  const result = await Promise.race([fetchP, timeoutP]);
+
+  if(SESSION) return; // logged in some other way while we were waiting
+  // Only act if we're still on the checking screen — if the person got
+  // impatient and tapped through to manual login already, leave them alone.
+  if(document.getElementById('login-step-checking').style.display === 'none') return;
+
+  if(result === TIMEOUT || !result){ showRoleStep(); return; }
+  const doc = result;
+  DB.doctors[saved.doctorId] = doc;
+  const acc = doc.accounts && doc.accounts[saved.accountKey];
+  if(!acc || !acc.bound || !acc.credentialId){ clearDeviceAccount(); showRoleStep(); return; }
   pendingLogin = { doctorId: saved.doctorId, accountKey: saved.accountKey, account: acc, doctor: {id:saved.doctorId, ...doc} };
   hideAllLoginSteps();
   document.getElementById('device-account-label').textContent = acc.label;
   document.getElementById('login-step-device').style.display='block';
-  return true;
 }
 function forgetDevice(){
   clearDeviceAccount();
   pendingLogin = null;
-  hideAllLoginSteps();
-  document.getElementById('login-step-role').style.display='block';
-  document.getElementById('login-role').value='';
+  showRoleStep();
 }
-async function resetLoginFlow(){
-  hideAllLoginSteps();
+// Used by the "← back" links: a deliberate step back to role selection,
+// not a re-check of the remembered device (see checkLoginOnResume for that).
+function resetLoginFlow(){
   pendingLogin = null;
-  document.getElementById('login-step-role').style.display='block';
-  document.getElementById('login-role').value='';
-  await tryShowDeviceLogin(); // swaps to the unlock screen itself if applicable
+  showRoleStep();
 }
 function startLoginFlow(){
   const role = document.getElementById('login-role').value;
@@ -641,6 +660,11 @@ function lookupAccount(){
   const phone = document.getElementById('login-phone').value.trim();
   const msg = document.getElementById('phone-msg');
   if(!phone){ msg.textContent='Enter your number.'; msg.className='login-msg err'; return; }
+  if(!doctorsDataLoaded){
+    msg.textContent='Still connecting — please wait a moment and try again.';
+    msg.className='login-msg err';
+    return;
+  }
   const found = findAccountByPhone(phone);
   if(!found){ msg.textContent='No account found with this number. Ask the Sante team to add it.'; msg.className='login-msg err'; return; }
   msg.textContent=''; pendingLogin = found;
@@ -712,7 +736,7 @@ function logout(){
   SESSION=null; currentView=null;
   document.getElementById('app').style.display='none';
   document.getElementById('login-screen').style.display='flex';
-  resetLoginFlow();
+  checkLoginOnResume();
 }
 function refreshWho(){
   if(SESSION.role==='admin'){
@@ -772,6 +796,7 @@ function orderMrpTotal(o){ return o.productCodes.reduce((s,c)=>s+(findProduct(c)
 function orderIncentive(o){ const doc=findDoc(o.doctorId); return Math.round(orderMrpTotal(o) * ((doc?.incentivePct||0)/100)); }
 function orderDiscounted(o){ return orderMrpTotal(o) - orderIncentive(o); }
 function orderPaid(o){ return Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0); }
+function paymentsArr(o){ return Object.entries(o.payments||{}).map(([id,p])=>({id,...p})).sort((a,b)=> a.date<b.date?1:-1); }
 function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date); d.setDate(d.getDate()+(doc?.dueDays||30)); return d.toISOString().slice(0,10); }
 
 /* ============================================================
@@ -1086,16 +1111,26 @@ function renderAdminLedger(){
     const paidStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial':'due');
     const existingPayouts = payoutsArr().filter(p=>p.orderId===o.id);
     const incentivePaid = existingPayouts.reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
+    const payments = paymentsArr(o);
     if(!payoutDraft[o.id]) payoutDraft[o.id] = [{name:doc.name, amount:inc}];
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date}</span></div><span class="badge ${paidStatus}">${paidStatus}</span></div>
       <div class="row" style="margin-top:10px;">
         <div class="stat-card" style="padding:12px;"><div class="label">Bill</div><div class="value" style="font-size:15px;">${money(disc)}</div></div>
         <div class="stat-card" style="padding:12px;"><div class="label">Paid</div><div class="value sage" style="font-size:15px;">${money(paid)}</div></div>
-        <div class="stat-card" style="padding:12px;"><div class="label">Balance due</div><div class="value" style="font-size:15px; color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Balance due</div><div class="value" style="font-size:15px; color:${balance>0?'var(--rust)':(balance<0?'var(--amber-bright)':'var(--sage)')}">${money(balance)}</div></div>
         <div class="stat-card" style="padding:12px;"><div class="label">Incentive</div><div class="value amber" style="font-size:15px;">${money(inc)} <span style="font-size:11px; color:var(--cream-faint);">(${money(incentivePaid)} paid)</span></div></div>
       </div>
+      ${payments.length ? `<div class="divider"></div>
+      <div class="panel-title" style="font-size:15px;">Payment history</div>
+      <div class="payment-history">
+        ${payments.map(p=>`<div class="payment-row" style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:13px;">
+          <span>${p.date} · ${money(p.amount)}</span>
+          <button class="btn btn-outline btn-sm" onclick="deletePayment('${o.id}','${p.id}')" style="color:var(--rust);">Remove</button>
+        </div>`).join('')}
+      </div>` : ''}
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Record a payment</div>
+      <div class="hint" style="margin:0 0 6px;">Balance due right now: <b style="color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</b></div>
       <div class="row"><div><input type="number" placeholder="Amount received (₹)" id="pay-amt-${o.id}"></div><div><button class="btn btn-sm" onclick="recordPayment('${o.id}')">Record + WhatsApp receipt</button></div></div>
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Incentive payout split</div>
@@ -1112,6 +1147,14 @@ function renderAdminLedger(){
       </div></div>`;
   }).join('') : `<div class="empty">No orders to settle yet.</div>`;
 }
+async function deletePayment(orderId, paymentId){
+  if(!confirm('Remove this payment entry? Use this to fix a duplicate or mistaken entry. This cannot be undone.')) return;
+  try{
+    await db.ref(`orders/${orderId}/payments/${paymentId}`).remove();
+  }catch(err){
+    alert('Could not remove payment: ' + err.message);
+  }
+}
 function addPayoutRow(orderId){ payoutDraft[orderId].push({name:'',amount:0}); renderAdminLedger(); }
 function removePayoutRow(orderId, idx){ payoutDraft[orderId].splice(idx,1); renderAdminLedger(); }
 function updatePayoutDraft(orderId, idx, field, val){ payoutDraft[orderId][idx][field] = field==='amount' ? (parseFloat(val)||0) : val; }
@@ -1120,12 +1163,23 @@ async function recordPayment(orderId){
   const amt = parseFloat(document.getElementById(`pay-amt-${orderId}`).value);
   if(!amt || amt<=0) return;
   const o = ordersArr().find(x=>x.id===orderId);
+  const currentBalance = orderDiscounted(o) - orderPaid(o);
+  if(amt > currentBalance){
+    const over = (amt - currentBalance).toFixed(2).replace(/\.00$/,'');
+    if(!confirm(`The balance due on this order is only ${money(currentBalance)}. Recording ${money(amt)} would leave this order overpaid by ₹${over}. Continue anyway?`)) return;
+  }
   await db.ref(`orders/${orderId}/payments/${uid('pay')}`).set({ amount:amt, date:new Date().toISOString().slice(0,10) });
   const doc = findDocSafe(o.doctorId);
   const billPhone = doc.accounts.doctor.phone;
   const newPaid = orderPaid(o)+amt;
   const balance = orderDiscounted(o) - newPaid;
-  const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)}.\nRemaining balance on this order: ${money(Math.max(balance,0))}\n— Sante Life Science`;
+  // Important: do NOT floor this at 0 — an overpayment should say so plainly
+  // instead of quietly showing "₹0", which is exactly what hid a ₹1
+  // overpayment from view before.
+  const balanceLine = balance > 0 ? `Remaining balance on this order: ${money(balance)}`
+    : balance < 0 ? `This order is now overpaid by ${money(-balance)} — we'll be in touch about a refund/credit.`
+    : `This order is now fully paid.`;
+  const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)}.\n${balanceLine}\n— Sante Life Science`;
   if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   else alert('Payment recorded. (No phone on file for this doctor, so no WhatsApp receipt was sent.)');
 }
@@ -1327,7 +1381,7 @@ if ('serviceWorker' in navigator) {
 // 'pageshow' (covers bfcache restores) and on the tab becoming visible again
 // (covers backgrounding on Android) fixes that on every browser.
 function recheckLoginScreen(){
-  if(!SESSION){ resetLoginFlow(); }
+  if(!SESSION){ checkLoginOnResume(); }
 }
 window.addEventListener('pageshow', recheckLoginScreen);
 document.addEventListener('visibilitychange', () => {
