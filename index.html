@@ -1431,14 +1431,23 @@ function orderCardHtml(o){
   const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
   const isConfirmed = o.status !== 'pending';
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
+  const mrp = orderMrpTotal(o);
+  const itemsTable = `<table style="margin-top:10px;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody>
+    ${o.productCodes.map((c,i)=>{
+      const p = findProduct(c);
+      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(c)}</td><td colspan="2" style="color:var(--rust);">Product no longer in catalog</td><td></td></tr>`;
+      return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`;
+    }).join('')}
+    <tr><td colspan="4" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+  </tbody></table>`;
   return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
     <div style="display:flex; gap:6px; align-items:center;">
       <span class="badge ${isConfirmed ? 'confirmed' : 'pending'}">${isConfirmed ? 'Confirmed' : 'Pending confirmation'}</span>
       ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
     </div></div>
-    <div class="manifest-items" style="line-height:1.6;">${o.productCodes.map(c=>{ const p=findProduct(c); return p ? `${escapeAttr(p.name)} <span style="color:var(--cream-faint);">(${money(p.mrp)})</span>` : `<span style="color:var(--rust);">${escapeAttr(c)} — no longer in catalog</span>`; }).join('<br>')}</div>
+    ${itemsTable}
     <div class="row" style="margin-top:10px;">
-      <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(orderMrpTotal(o))}</div></div>
+      <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(mrp)}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Billed</div><div class="value amber" style="font-size:14px;">${money(disc)}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
