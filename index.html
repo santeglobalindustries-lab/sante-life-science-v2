@@ -298,18 +298,24 @@
         </div>
         <div class="panel">
           <div class="panel-title">Import / update prices</div>
-          <div class="view-desc" style="margin-bottom:10px;">Paste CSV rows as <span class="mono">code,name,category,mrp</span> — one product per line. Existing codes are updated in place; new codes are added.</div>
+          <div class="view-desc" style="margin-bottom:10px;">Paste CSV rows as <span class="mono">code,name,category,mrp</span> — one product per line. Nothing is written until you review and confirm the preview below.</div>
           <div style="margin-bottom:12px;">
             <label class="small">Upload a CSV file</label>
             <input type="file" id="csv-file" accept=".csv,text/csv" onchange="importCsvFile(event)">
           </div>
           <div class="view-desc" style="margin:4px 0 8px;">— or paste rows below —</div>
           <textarea id="csv-input" placeholder="SC-4.5-30,4.5mm Cortical Screw 30mm,Screws,420&#10;IMP-TIT-08,Titanium Spinal Implant 08,Implants,18500"></textarea>
-          <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
-            <button class="btn btn-sm" onclick="importCsv()">Import pasted rows</button>
+          <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button class="btn btn-sm" onclick="importCsv()">Review pasted rows</button>
             <button class="btn btn-outline btn-sm" onclick="document.getElementById('csv-input').value=''">Clear</button>
             <span id="import-status" style="font-size:12px; color:var(--sage);"></span>
           </div>
+          <div id="import-preview" style="margin-top:12px; padding:12px; border:1px solid var(--amber); background:rgba(212,165,116,0.06); display:none;"></div>
+          <div id="import-skipped-detail" style="margin-top:10px; font-size:12px; color:var(--cream-faint); display:none;"></div>
+          <div class="divider"></div>
+          <div class="panel-title" style="font-size:15px;">Catalog backups</div>
+          <div class="view-desc" style="margin-bottom:6px;">A snapshot of the whole catalog is saved automatically right before every import — restore one if an import turns out to be wrong.</div>
+          <div id="catalog-backups-list"></div>
         </div>
         <div class="flex-between" style="margin-bottom:12px;">
           <input type="text" id="product-search" placeholder="Search catalog…" style="max-width:280px;" oninput="renderProductTable()">
@@ -472,6 +478,7 @@ let editingDoctorId = null;  // doctor whose name/incentive/due-days is being ed
 let editingProductId = null; // product row being edited inline
 let editingOrderId = null;   // a doctor's own pending order being edited, or null for a fresh order
 let doctorsDataLoaded = false; // true once we've received at least one real doctors snapshot from Firebase
+let pendingImport = null; // parsed-but-not-yet-written CSV import, awaiting confirmation
 
 function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -765,7 +772,7 @@ function showView(id, silent){
   document.getElementById('v-'+id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===id));
   if(id==='admin-dashboard') renderAdminDashboard();
-  if(id==='admin-products') renderProductTable();
+  if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); }
   if(id==='admin-kits') renderKitsList();
   if(id==='admin-doctors') renderDoctorsList();
   if(id==='admin-orders') renderAdminOrders();
@@ -895,84 +902,142 @@ function detectDelimiter(sampleLine){
   const commaCount = (sampleLine.match(/,/g)||[]).length;
   return tabCount > commaCount ? '\t' : ',';
 }
-function stripThousandsCommas(line){
-  // A price like "4,087.50" or "18,500" uses a comma as a thousands
-  // separator, not a column separator — but to a comma-splitting parser it
-  // looks identical to one, and silently truncates the price to just its
-  // first digit(s) ("4,087.50" → price read as "4"). This is why some
-  // already-imported products are showing drastically wrong prices. Strip
-  // commas that sit between digits in a 3-digit group (outside quotes)
-  // before splitting on columns.
-  let out = '', inQuotes = false;
-  for(let i=0;i<line.length;i++){
-    const ch = line[i];
-    if(ch === '"') inQuotes = !inQuotes;
-    if(ch === ',' && !inQuotes && /\d/.test(line[i-1]||'') && /^\d{3}(\D|$)/.test(line.slice(i+1))){
-      continue; // drop this grouping comma
+function splitCsvLine(line, delimiter){
+  // A proper CSV/TSV field splitter. Two things a naive "just split on the
+  // delimiter" approach gets wrong, both of which were silently corrupting
+  // real rows from this catalog:
+  //  1. A field is only "quoted" if it starts with a " right after a
+  //     delimiter — a stray " elsewhere (e.g. an inches mark in a product
+  //     name) is just literal text, not the start of a quoted field.
+  //  2. A comma used as a thousands separator in an unquoted price
+  //     ("4,087.50") looks identical to a column boundary. We only treat it
+  //     as literal digits (not a delimiter) when it sits between digits in
+  //     a 3-digit group — this is what was truncating ₹4,087.50 down to ₹4.
+  const out = [];
+  let i = 0;
+  const len = line.length;
+  while(true){
+    let field = '';
+    if(line[i] === '"'){
+      i++;
+      while(i < len){
+        if(line[i] === '"'){
+          if(line[i+1] === '"'){ field += '"'; i += 2; }
+          else { i++; break; }
+        } else { field += line[i]; i++; }
+      }
+      while(i < len && line[i] !== delimiter) i++; // ignore any stray trailing chars before the real delimiter
+    } else {
+      while(i < len){
+        const ch = line[i];
+        if(ch === delimiter){
+          if(delimiter === ',' && /\d/.test(line[i-1]||'') && /^\d{3}(\D|$)/.test(line.slice(i+1))){
+            i++; continue; // grouping comma inside a number — not a real column break
+          }
+          break;
+        }
+        field += ch; i++;
+      }
     }
-    out += ch;
+    out.push(field.trim());
+    if(i >= len) break;
+    i++; // skip the real delimiter
   }
   return out;
 }
-function splitCsvLine(line, delimiter){
-  // A real CSV/TSV field splitter that respects "quoted fields, like this"
-  // containing the delimiter itself. Without this, any product name with a
-  // comma in it (extremely common in a hardware catalog — e.g. "Plate,
-  // Locking, 3.5mm") silently breaks column alignment and the whole row
-  // gets skipped, which is what was eating most of a 7,890-row import.
-  const out = [];
-  let cur = '', inQuotes = false;
-  for(let i=0;i<line.length;i++){
-    const ch = line[i];
-    if(inQuotes){
-      if(ch === '"'){ if(line[i+1] === '"'){ cur+='"'; i++; } else { inQuotes=false; } }
-      else cur+=ch;
-    } else {
-      if(ch === '"') inQuotes = true;
-      else if(ch === delimiter){ out.push(cur); cur=''; }
-      else cur+=ch;
-    }
-  }
-  out.push(cur);
-  return out.map(s=>s.trim().replace(/^"|"$/g,''));
-}
-async function parseAndImportCsv(raw){
-  const statusEl = document.getElementById('import-status');
-  if(!raw || !raw.trim()) return;
+function parseCsvRows(raw){
+  if(!raw || !raw.trim()) return null;
   let lines = raw.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  if(!lines.length) return;
+  if(!lines.length) return null;
   const delimiter = detectDelimiter(lines[0]);
-  if(delimiter === ',') lines = lines.map(stripThousandsCommas);
-  // Drop a header row if the first line looks like column labels rather than data.
   if(/code/i.test(lines[0]) && /name|product/i.test(lines[0]) && /mrp|price/i.test(lines[0])){
     lines = lines.slice(1);
   }
   let added=0, updated=0, skipped=0;
   const updates = {};
-  const skippedSamples = [];
+  const addedSamples = [], updatedSamples = [], skippedRows = [];
   const existingCodes = new Set(productsArr().map(p=>p.code));
   lines.forEach(line=>{
     const parts = splitCsvLine(line, delimiter);
-    if(parts.length<4){ skipped++; if(skippedSamples.length<5) skippedSamples.push(line.slice(0,60)); return; }
+    const skip = (reason) => { skipped++; if(skippedRows.length<15) skippedRows.push({line, reason}); };
+    if(parts.length<4){ skip(`only found ${parts.length} column(s), need at least 4`); return; }
     const [code,name,category,...rest] = parts;
-    const mrpStr = rest[rest.length-1]; // last field, in case anything earlier still had a stray delimiter
+    const mrpStr = rest[rest.length-1];
     const mrp = Math.round(parseFloat(String(mrpStr).replace(/[^\d.\-]/g,'')));
-    if(!code || !name || isNaN(mrp)){ skipped++; if(skippedSamples.length<5) skippedSamples.push(line.slice(0,60)); return; }
-    if(existingCodes.has(code)) updated++; else added++;
+    if(!code){ skip('missing code'); return; }
+    if(!name){ skip('missing name'); return; }
+    if(isNaN(mrp)){ skip(`price "${mrpStr}" isn't a number`); return; }
+    const isNew = !existingCodes.has(code);
+    if(isNew){ added++; if(addedSamples.length<5) addedSamples.push({code,name,mrp}); }
+    else { updated++; if(updatedSamples.length<5){ const old=findProduct(code); updatedSamples.push({code,name,oldMrp:old?.mrp, mrp}); } }
     existingCodes.add(code);
     updates[sanitizeKey(code)] = { code, name, category: category||'', mrp };
   });
-  if(Object.keys(updates).length===0){
+  return { updates, added, updated, skipped, skippedRows, addedSamples, updatedSamples, lineCount: lines.length };
+}
+function renderImportPreview(parsed){
+  const previewEl = document.getElementById('import-preview');
+  const detailEl = document.getElementById('import-skipped-detail');
+  const statusEl = document.getElementById('import-status');
+  statusEl.textContent = '';
+  if(!parsed || Object.keys(parsed.updates).length===0){
+    previewEl.style.display='none';
+    detailEl.style.display = parsed && parsed.skippedRows.length ? 'block' : 'none';
+    if(parsed && parsed.skippedRows.length) detailEl.innerHTML = renderSkippedDetail(parsed);
     statusEl.style.color='var(--rust)';
-    statusEl.textContent = `Nothing to import — check the format is code,name,category,mrp (${skipped} rows skipped).`;
+    statusEl.textContent = parsed ? `Nothing usable found to import (${parsed.skipped} rows skipped, see details below).` : 'Paste some rows or choose a file first.';
     return;
   }
-  // Write in batches of 500 so one huge multi-thousand-row update can't
-  // silently time out or fail partway through on a slow connection — and so
-  // you can see progress instead of staring at a frozen screen.
-  const entries = Object.entries(updates);
-  const BATCH = 500;
+  pendingImport = parsed;
+  const catalogBefore = productsArr().length;
+  const catalogAfter = catalogBefore + parsed.added;
+  const bigChange = parsed.added + parsed.updated > 0 && (parsed.skipped / parsed.lineCount) > 0.3;
+  previewEl.style.display='block';
+  previewEl.innerHTML = `
+    <div class="panel-title" style="font-size:15px;">Review before importing</div>
+    <div class="view-desc" style="margin-bottom:8px;">
+      This will <b style="color:var(--sage)">add ${parsed.added}</b> new product${parsed.added===1?'':'s'} and
+      <b style="color:var(--amber-bright)">update ${parsed.updated}</b> existing product${parsed.updated===1?'':'s'}${parsed.skipped?`, skipping ${parsed.skipped} row${parsed.skipped===1?'':'s'}`:''}.
+      Catalog size will go from ${catalogBefore} → ${catalogAfter} products.
+    </div>
+    ${bigChange ? `<div class="hint" style="color:var(--rust); margin-bottom:8px;">⚠ Over 30% of rows in this file were skipped — double check this is the right file before continuing.</div>` : ''}
+    ${parsed.addedSamples.length ? `<div style="font-size:12px; margin-bottom:6px;"><b>New products (example):</b> ${parsed.addedSamples.map(s=>`${escapeAttr(s.code)} — ${escapeAttr(s.name)} (₹${s.mrp})`).join('; ')}</div>` : ''}
+    ${parsed.updatedSamples.length ? `<div style="font-size:12px; margin-bottom:10px;"><b>Price changes (example):</b> ${parsed.updatedSamples.map(s=>`${escapeAttr(s.code)}: ₹${s.oldMrp ?? '?'} → ₹${s.mrp}`).join('; ')}</div>` : ''}
+    <div style="display:flex; gap:10px;">
+      <button class="btn btn-sm" onclick="confirmCsvImport()">Confirm &amp; import</button>
+      <button class="btn btn-outline btn-sm" onclick="cancelCsvImport()">Cancel</button>
+    </div>`;
+  detailEl.style.display = parsed.skippedRows.length ? 'block' : 'none';
+  if(parsed.skippedRows.length) detailEl.innerHTML = renderSkippedDetail(parsed);
+}
+function renderSkippedDetail(parsed){
+  return `<div style="margin-bottom:4px; color:var(--cream-faint);">Skipped row${parsed.skipped===1?'':'s'} (showing ${parsed.skippedRows.length} of ${parsed.skipped}) — each on its own line so you can fix the source file:</div>` +
+    parsed.skippedRows.map((s,i)=>`<div style="padding:3px 0; border-top:1px solid var(--line);"><span style="color:var(--rust);">#${i+1} — ${escapeAttr(s.reason)}:</span> <span class="mono">${escapeAttr(s.line)}</span></div>`).join('');
+}
+function cancelCsvImport(){
+  pendingImport = null;
+  document.getElementById('import-preview').style.display='none';
+  document.getElementById('import-preview').innerHTML='';
+  document.getElementById('import-status').textContent='Import cancelled — nothing was changed.';
+  document.getElementById('import-status').style.color='var(--cream-faint)';
+}
+async function confirmCsvImport(){
+  if(!pendingImport) return;
+  const parsed = pendingImport;
+  const statusEl = document.getElementById('import-status');
+  const previewEl = document.getElementById('import-preview');
+  previewEl.style.display='none';
   statusEl.style.color='var(--amber-bright)';
+  statusEl.textContent = 'Backing up current catalog…';
+  try{
+    await backupProductCatalog();
+  }catch(err){
+    if(!confirm(`Could not create a safety backup first (${err.message}). Import anyway without a backup?`)) {
+      statusEl.style.color='var(--rust)'; statusEl.textContent='Import cancelled — no backup could be made.'; return;
+    }
+  }
+  const entries = Object.entries(parsed.updates);
+  const BATCH = 500;
   try{
     for(let i=0;i<entries.length;i+=BATCH){
       const batch = Object.fromEntries(entries.slice(i, i+BATCH));
@@ -980,24 +1045,65 @@ async function parseAndImportCsv(raw){
       statusEl.textContent = `Importing… ${Math.min(i+BATCH, entries.length)} of ${entries.length}`;
     }
     statusEl.style.color='var(--sage)';
-    statusEl.textContent = `Added ${added}, updated ${updated}${skipped?`, skipped ${skipped}`:''}.`
-      + (skippedSamples.length ? ` Example skipped row(s) — check the format: ${skippedSamples.join('  |  ')}` : '');
+    statusEl.textContent = `Added ${parsed.added}, updated ${parsed.updated}${parsed.skipped?`, skipped ${parsed.skipped} (see details below)`:''}. A backup of the previous catalog was saved — see "Catalog backups" below if you need to undo this.`;
+    document.getElementById('csv-input').value = '';
   }catch(err){
     statusEl.style.color='var(--rust)';
     statusEl.textContent = 'Import failed partway through: ' + err.message + ' — if this says "permission_denied", enable Anonymous sign-in in Firebase and refresh. Rows already written are saved; just re-run the import to pick up where it left off.';
   }
+  pendingImport = null;
+  renderCatalogBackups();
+}
+// Snapshots the current product catalog before every import, so a wrong
+// file or a mistake can be undone with one click instead of being a
+// permanent, silent mistake. Keeps the 5 most recent backups.
+async function backupProductCatalog(){
+  const snap = await db.ref('products').once('value');
+  const data = snap.val() || {};
+  const key = new Date().toISOString().replace(/[.:]/g,'-');
+  await db.ref('productBackups/'+key).set({ savedAt: new Date().toISOString(), count: Object.keys(data).length, data });
+  const listSnap = await db.ref('productBackups').once('value');
+  const keys = Object.keys(listSnap.val() || {}).sort();
+  const excess = keys.length - 5;
+  if(excess > 0){
+    const toDelete = keys.slice(0, excess);
+    await Promise.all(toDelete.map(k => db.ref('productBackups/'+k).remove()));
+  }
+}
+async function renderCatalogBackups(){
+  const el = document.getElementById('catalog-backups-list');
+  if(!el) return;
+  try{
+    const snap = await db.ref('productBackups').once('value');
+    const backups = Object.entries(snap.val() || {}).map(([id,b])=>({id,...b})).sort((a,b)=> b.id.localeCompare(a.id));
+    el.innerHTML = backups.length ? backups.map(b=>`<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:13px;">
+      <span>${new Date(b.savedAt).toLocaleString()} · ${b.count} products</span>
+      <button class="btn btn-outline btn-sm" onclick="restoreProductBackup('${b.id}')" style="color:var(--rust);">Restore this</button>
+    </div>`).join('') : `<div class="empty" style="padding:8px 0;">No backups yet — one is made automatically before every import.</div>`;
+  }catch(e){ el.innerHTML = `<div class="empty" style="padding:8px 0;">Could not load backups: ${escapeAttr(e.message)}</div>`; }
+}
+async function restoreProductBackup(backupId){
+  if(!confirm('Restore the catalog to this backup? This will REPLACE the entire current product list with what was saved at that time. This cannot be undone (though it does create nothing new to undo it with, so consider carefully).')) return;
+  try{
+    const snap = await db.ref('productBackups/'+backupId).once('value');
+    const backup = snap.val();
+    if(!backup){ alert('That backup could not be found.'); return; }
+    await db.ref('products').set(backup.data || {});
+    alert('Catalog restored.');
+  }catch(err){
+    alert('Could not restore: ' + err.message);
+  }
 }
 async function importCsv(){
   const raw = document.getElementById('csv-input').value.trim();
-  await parseAndImportCsv(raw);
-  document.getElementById('csv-input').value='';
+  renderImportPreview(parseCsvRows(raw));
 }
 function importCsvFile(event){
   const file = event.target.files[0];
   if(!file) return;
   const reader = new FileReader();
-  reader.onload = async (e) => {
-    await parseAndImportCsv(e.target.result);
+  reader.onload = (e) => {
+    renderImportPreview(parseCsvRows(e.target.result));
     event.target.value = ''; // allow re-uploading the same filename later
   };
   reader.readAsText(file);
