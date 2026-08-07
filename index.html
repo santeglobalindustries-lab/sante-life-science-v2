@@ -367,9 +367,11 @@
           <div class="row">
             <div><label class="small">Doctor name</label><input type="text" id="doc-name" placeholder="Dr. Ashray Deshmukh"></div>
             <div><label class="small">Doctor's own WhatsApp number</label><input type="tel" id="doc-phone" placeholder="98xxxxxxxx"></div>
+            <div><label class="small">Discount rate (%)</label><input type="number" id="doc-discount" placeholder="10"></div>
             <div><label class="small">Incentive rate (%)</label><input type="number" id="doc-incentive" placeholder="30"></div>
             <div><label class="small">Payment due (days)</label><input type="number" id="doc-due-days" placeholder="30"></div>
           </div>
+          <div class="hint" style="margin:8px 0 0;">Discount reduces what the doctor is billed. Incentive is the commission paid out to them/their staff — the two are independent and can be set to different rates.</div>
           <button class="btn btn-sm" style="margin-top:14px;" onclick="createDoctor()">Add doctor</button>
         </div>
         <div id="doctors-list"></div>
@@ -796,7 +798,7 @@ const findDoc = id => DB.doctors[id] ? {id, ...DB.doctors[id]} : null;
 // Fallback used whenever an order references a doctor that no longer exists
 // (e.g. deleted from Admin → Doctors). Without this, a single orphaned order
 // would throw mid-render and blank out the ENTIRE orders/dashboard/ledger list.
-const UNKNOWN_DOC = { name: 'Unknown doctor (deleted)', incentivePct: 0, dueDays: 30,
+const UNKNOWN_DOC = { name: 'Unknown doctor (deleted)', discountPct: 0, incentivePct: 0, dueDays: 30,
   accounts: { doctor:{phone:'',label:'Doctor'}, technician:{phone:'',label:'Technician'}, helper:{phone:'',label:'Helper'} } };
 const findDocSafe = id => findDoc(id) || UNKNOWN_DOC;
 function sanitizeKey(code){
@@ -818,8 +820,25 @@ const kitTotal = itemsTotal; // kept as an alias since some call-sites still say
 // order. Rounding here means the number used in every calculation always
 // matches what's shown on screen.
 function orderMrpTotal(o){ return itemsTotal(orderItems(o)); }
+// Discount and incentive are independent rates — discount reduces what the
+// doctor is billed; incentive is a separate commission paid out to them/
+// their staff. Each order uses the doctor's default discount rate UNLESS
+// Admin has explicitly overridden it for that specific order (discountPctOverride).
+// IMPORTANT backward-compat: doctors added before this feature existed have
+// no discountPct field at all. Previously their bill was MRP minus their
+// incentive, i.e. the incentive rate WAS the discount rate. Falling back to
+// incentivePct here (rather than 0) means every existing doctor's bill
+// amount stays exactly the same as it always was until Admin explicitly
+// sets a distinct discount rate for them.
+function effectiveDiscountPct(o){
+  const doc = findDoc(o.doctorId);
+  if(o.discountPctOverride !== undefined && o.discountPctOverride !== null) return o.discountPctOverride;
+  if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
+  return doc?.incentivePct || 0;
+}
+function orderDiscountAmount(o){ return Math.round(orderMrpTotal(o) * (effectiveDiscountPct(o)/100)); }
 function orderIncentive(o){ const doc=findDoc(o.doctorId); return Math.round(orderMrpTotal(o) * ((doc?.incentivePct||0)/100)); }
-function orderDiscounted(o){ return orderMrpTotal(o) - orderIncentive(o); }
+function orderDiscounted(o){ return orderMrpTotal(o) - orderDiscountAmount(o); }
 function orderPaid(o){ return Math.round(Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0)); }
 function paymentsArr(o){ return Object.entries(o.payments||{}).map(([id,p])=>({id,...p})).sort((a,b)=> a.date<b.date?1:-1); }
 function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date); d.setDate(d.getDate()+(doc?.dueDays||30)); return d.toISOString().slice(0,10); }
@@ -1199,19 +1218,20 @@ function renderKitsList(){
 async function createDoctor(){
   const name = document.getElementById('doc-name').value.trim();
   const phone = document.getElementById('doc-phone').value.trim().replace(/[^\d]/g,'');
+  const discountPct = parseFloat(document.getElementById('doc-discount').value) || 0;
   const incentivePct = parseFloat(document.getElementById('doc-incentive').value)||0;
   const dueDays = parseInt(document.getElementById('doc-due-days').value)||30;
   if(!name || !phone){ alert('Doctor name and WhatsApp number are required.'); return; }
   try{
     await db.ref('doctors/' + uid('doc')).set({
-      name, incentivePct, dueDays,
+      name, discountPct, incentivePct, dueDays,
       accounts: {
         doctor:     { label: `${name} (Doctor)`,        phone, pinHash:null, credentialId:null, bound:false },
         technician: { label: `Technician — ${name}`,     phone:'', pinHash:null, credentialId:null, bound:false },
         helper:     { label: `Helper — ${name}`,          phone:'', pinHash:null, credentialId:null, bound:false }
       }
     });
-    ['doc-name','doc-phone','doc-incentive','doc-due-days'].forEach(id=>document.getElementById(id).value='');
+    ['doc-name','doc-phone','doc-discount','doc-incentive','doc-due-days'].forEach(id=>document.getElementById(id).value='');
   }catch(err){
     alert('Could not save this doctor: ' + err.message + '\n\nIf this says "Permission denied", enable Anonymous sign-in in Firebase Authentication and refresh the page.');
   }
@@ -1251,6 +1271,7 @@ function renderDoctorsList(){
     const head = editingDoctorId === d.id ? `
       <div class="manifest-head" style="flex-wrap:wrap; gap:8px; align-items:center;">
         <input type="text" id="edit-doc-name-${d.id}" value="${escapeAttr(d.name)}" placeholder="Doctor name" style="max-width:220px;">
+        <input type="number" id="edit-doc-discount-${d.id}" value="${d.discountPct??d.incentivePct??0}" placeholder="Discount %" style="max-width:110px;">
         <input type="number" id="edit-doc-incentive-${d.id}" value="${d.incentivePct}" placeholder="Incentive %" style="max-width:110px;">
         <input type="number" id="edit-doc-duedays-${d.id}" value="${d.dueDays}" placeholder="Due days" style="max-width:110px;">
         <button class="btn btn-sm" onclick="saveDoctorMeta('${d.id}')">Save</button>
@@ -1258,10 +1279,10 @@ function renderDoctorsList(){
       </div>` : `
       <div class="manifest-head">
         <div><span class="kit-name">${d.name}</span></div>
-        <span class="tray-dots">${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span>
+        <span class="tray-dots">${d.discountPct??d.incentivePct??0}% DISCOUNT · ${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span>
       </div>
       <div style="display:flex; gap:8px; margin:6px 0 12px;">
-        <button class="btn btn-outline btn-sm" onclick="startEditDoctor('${d.id}')">Edit name / incentive / due days</button>
+        <button class="btn btn-outline btn-sm" onclick="startEditDoctor('${d.id}')">Edit name / discount / incentive / due days</button>
         <button class="btn btn-outline btn-sm" onclick="deleteDoctor('${d.id}')" style="color:var(--rust);">Delete doctor</button>
       </div>`;
 
@@ -1275,11 +1296,12 @@ function startEditDoctor(id){ editingDoctorId = id; renderDoctorsList(); }
 function cancelEditDoctor(){ editingDoctorId = null; renderDoctorsList(); }
 async function saveDoctorMeta(id){
   const name = document.getElementById(`edit-doc-name-${id}`).value.trim();
+  const discountPct = parseFloat(document.getElementById(`edit-doc-discount-${id}`).value) || 0;
   const incentivePct = parseFloat(document.getElementById(`edit-doc-incentive-${id}`).value) || 0;
   const dueDays = parseInt(document.getElementById(`edit-doc-duedays-${id}`).value) || 30;
   if(!name){ alert('Doctor name is required.'); return; }
   try{
-    await db.ref(`doctors/${id}`).update({ name, incentivePct, dueDays });
+    await db.ref(`doctors/${id}`).update({ name, discountPct, incentivePct, dueDays });
     editingDoctorId = null;
   }catch(err){
     alert('Could not save changes: ' + err.message);
@@ -1306,6 +1328,8 @@ function renderAdminOrders(){
     const doc = findDocSafe(o.doctorId);
     const billPhone = doc.accounts.doctor.phone;
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
+    const discPct = effectiveDiscountPct(o);
+    const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
     const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
@@ -1325,12 +1349,42 @@ function renderAdminOrders(){
         <div class="stat-card" style="padding:12px;"><div class="label">Discounted bill</div><div class="value amber" style="font-size:16px;">${money(disc)}</div></div>
         <div class="stat-card" style="padding:12px;"><div class="label">Incentive</div><div class="value sage" style="font-size:16px;">${money(inc)}</div></div>
       </div>
+      <div class="divider"></div>
+      <div class="panel-title" style="font-size:15px;">Discount for this order</div>
+      <div class="hint" style="margin:0 0 8px;">
+        Currently applying <b style="color:var(--amber-bright)">${discPct}%</b> (${money(orderDiscountAmount(o))} off MRP)
+        ${isOverridden ? ` — <span style="color:var(--rust);">overridden for this order</span> (doctor's default is ${doc.discountPct??0}%)` : ` — doctor's default rate`}
+      </div>
+      <div class="row">
+        <div><input type="number" id="disc-override-${o.id}" placeholder="e.g. 15" value="${isOverridden ? o.discountPctOverride : ''}"></div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-outline btn-sm" onclick="setOrderDiscount('${o.id}')">Apply to this order</button>
+          ${isOverridden ? `<button class="btn btn-outline btn-sm" onclick="resetOrderDiscount('${o.id}')">Reset to default (${doc.discountPct??0}%)</button>` : ''}
+        </div>
+      </div>
       <div class="whatsapp-box">${msg}</div>
       <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         ${o.status==='pending' ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
         ${waLink ? `<a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">No orders yet.</div>`;
+}
+async function setOrderDiscount(orderId){
+  const val = document.getElementById(`disc-override-${orderId}`).value;
+  const pct = parseFloat(val);
+  if(val==='' || isNaN(pct) || pct<0){ alert('Enter a valid discount percentage (0 or more).'); return; }
+  try{
+    await db.ref(`orders/${orderId}/discountPctOverride`).set(pct);
+  }catch(err){
+    alert('Could not update the discount: ' + err.message);
+  }
+}
+async function resetOrderDiscount(orderId){
+  try{
+    await db.ref(`orders/${orderId}/discountPctOverride`).remove();
+  }catch(err){
+    alert('Could not reset the discount: ' + err.message);
+  }
 }
 async function confirmOrder(id){ await db.ref('orders/'+id+'/status').set('confirmed'); }
 
