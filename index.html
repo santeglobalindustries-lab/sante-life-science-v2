@@ -803,14 +803,21 @@ function sanitizeKey(code){
   return String(code).replace(/\./g,'_d_').replace(/#/g,'_h_').replace(/\$/g,'_dl_').replace(/\//g,'_s_').replace(/\[/g,'_lb_').replace(/\]/g,'_rb_');
 }
 const findProduct = code => productsArr().find(p=>p.code===code) || null;
-const kitTotal = codes => Math.round(codes.reduce((s,c)=>s+(findProduct(c)?.mrp||0),0));
+// Orders/kits used to store a flat list of product codes (quantity always
+// implicitly 1). These helpers read either the old shape or the new
+// {code, qty} shape transparently, so existing orders/kits already in
+// Firebase keep working exactly as before without needing a data migration.
+function orderItems(o){ return Array.isArray(o.items) ? o.items : (o.productCodes||[]).map(c=>({code:c, qty:1})); }
+function kitItems(k){ return Array.isArray(k.items) ? k.items : (k.productCodes||[]).map(c=>({code:c, qty:1})); }
+const itemsTotal = items => Math.round(items.reduce((s,it)=>s+(findProduct(it.code)?.mrp||0)*(it.qty||1),0));
+const kitTotal = itemsTotal; // kept as an alias since some call-sites still say kitTotal
 // Rounded to the nearest rupee: every screen in this app only ever displays
 // whole rupees, so any fractional MRP snuck in via a CSV import or a typo
 // would otherwise sit invisibly in every total and eventually surface as a
 // confusing ₹1 mismatch on a balance — exactly what happened with Dr Pooja's
 // order. Rounding here means the number used in every calculation always
 // matches what's shown on screen.
-function orderMrpTotal(o){ return Math.round(o.productCodes.reduce((s,c)=>s+(findProduct(c)?.mrp||0),0)); }
+function orderMrpTotal(o){ return itemsTotal(orderItems(o)); }
 function orderIncentive(o){ const doc=findDoc(o.doctorId); return Math.round(orderMrpTotal(o) * ((doc?.incentivePct||0)/100)); }
 function orderDiscounted(o){ return orderMrpTotal(o) - orderIncentive(o); }
 function orderPaid(o){ return Math.round(Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0)); }
@@ -835,7 +842,7 @@ function renderAdminDashboard(){
   document.getElementById('admin-pending-orders').innerHTML = pending.length ? pending.map(o=>{
     const doc=findDocSafe(o.doctorId);
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge pending">Pending</span></div>
-      <div class="manifest-items">${o.productCodes.length} items · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}</div>
+      <div class="manifest-items">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}</div>
       <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">Review in Orders →</button></div></div>`;
   }).join('') : `<div class="empty">No orders waiting on confirmation right now.</div>`;
 }
@@ -1117,7 +1124,7 @@ function importCsvFile(event){
 /* ============================================================
    ADMIN: KITS
 ============================================================ */
-let kitBuilderCodes = [];
+let kitBuilderItems = []; // [{code, qty}]
 function renderKitProductSearch(){
   const q = document.getElementById('kit-product-search').value.trim().toLowerCase();
   const box = document.getElementById('kit-product-results');
@@ -1126,29 +1133,64 @@ function renderKitProductSearch(){
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addKitProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
 }
-function addKitProduct(code){ if(!kitBuilderCodes.includes(code)) kitBuilderCodes.push(code); document.getElementById('kit-product-search').value=''; document.getElementById('kit-product-results').style.display='none'; renderKitPills(); }
-function removeKitProduct(code){ kitBuilderCodes = kitBuilderCodes.filter(c=>c!==code); renderKitPills(); }
+function addKitProduct(code){
+  const existing = kitBuilderItems.find(it=>it.code===code);
+  if(existing) existing.qty = (existing.qty||1) + 1;
+  else kitBuilderItems.push({code, qty:1});
+  document.getElementById('kit-product-search').value='';
+  document.getElementById('kit-product-results').style.display='none';
+  renderKitPills();
+}
+function removeKitProduct(code){ kitBuilderItems = kitBuilderItems.filter(it=>it.code!==code); renderKitPills(); }
+function incrementKitQty(code){ const it=kitBuilderItems.find(x=>x.code===code); if(it){ it.qty=(it.qty||1)+1; renderKitPills(); } }
+function decrementKitQty(code){
+  const it=kitBuilderItems.find(x=>x.code===code);
+  if(!it) return;
+  it.qty = (it.qty||1) - 1;
+  if(it.qty <= 0) kitBuilderItems = kitBuilderItems.filter(x=>x.code!==code);
+  renderKitPills();
+}
+function setKitQty(code, value){
+  const qty = Math.max(1, Math.round(parseFloat(value)) || 1);
+  const it = kitBuilderItems.find(x=>x.code===code);
+  if(it) it.qty = qty;
+  renderKitPills();
+}
 function renderKitPills(){
-  document.getElementById('kit-product-pills').innerHTML = kitBuilderCodes.map(c=>{ const p=findProduct(c); return `<span class="pill">${p.name} <button onclick="removeKitProduct('${c}')">×</button></span>`; }).join('');
+  document.getElementById('kit-product-pills').innerHTML = kitBuilderItems.map(it=>{
+    const p=findProduct(it.code);
+    if(!p) return '';
+    const qty = it.qty||1;
+    return `<span class="pill">
+      <span>${escapeAttr(p.name)}</span>
+      <span style="display:inline-flex; align-items:center; gap:4px;">
+        <button type="button" onclick="decrementKitQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">−</button>
+        <input type="number" min="1" value="${qty}" onchange="setKitQty('${it.code}', this.value)" style="width:40px; text-align:center; padding:2px; font-size:12px;">
+        <button type="button" onclick="incrementKitQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">+</button>
+      </span>
+      <button onclick="removeKitProduct('${it.code}')">×</button>
+    </span>`;
+  }).join('');
 }
 async function createKit(){
   const name = document.getElementById('kit-name').value.trim();
   const code = document.getElementById('kit-code').value.trim();
-  if(!name || kitBuilderCodes.length===0){ alert('Give the kit a name and add at least one product.'); return; }
+  if(!name || kitBuilderItems.length===0){ alert('Give the kit a name and add at least one product.'); return; }
   try{
-    await db.ref('kits/' + uid('kit')).set({ name, code: code || name.slice(0,6).toUpperCase(), productCodes:[...kitBuilderCodes] });
+    await db.ref('kits/' + uid('kit')).set({ name, code: code || name.slice(0,6).toUpperCase(), items:[...kitBuilderItems.map(it=>({code:it.code, qty:it.qty||1}))] });
     document.getElementById('kit-name').value=''; document.getElementById('kit-code').value='';
-    kitBuilderCodes=[]; renderKitPills();
+    kitBuilderItems=[]; renderKitPills();
   }catch(err){
     alert('Could not save this kit: ' + err.message);
   }
 }
 function renderKitsList(){
-  document.getElementById('kits-list').innerHTML = kitsArr().map(k=>`
-    <div class="manifest"><div class="manifest-head"><div><span class="kit-name">${k.name}</span> <span class="kit-code">· ${k.code}</span></div><span class="tray-dots">TRAY · ${k.productCodes.length} ITEMS</span></div>
-      <div class="manifest-items">${k.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
-      <div style="margin-top:10px; font-size:12px; color:var(--cream-faint);">Kit MRP total: <span class="num">${money(kitTotal(k.productCodes))}</span></div></div>`
-  ).join('') || `<div class="empty">No kit templates yet — build one above.</div>`;
+  document.getElementById('kits-list').innerHTML = kitsArr().map(k=>{
+    const items = kitItems(k);
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${k.name}</span> <span class="kit-code">· ${k.code}</span></div><span class="tray-dots">TRAY · ${items.length} ITEM${items.length===1?'':'S'}</span></div>
+      <div class="manifest-items">${items.map(it=>{ const p=findProduct(it.code); return p ? `${escapeAttr(p.name)}${(it.qty||1)>1 ? ` ×${it.qty}` : ''}` : ''; }).filter(Boolean).join(' · ')}</div>
+      <div style="margin-top:10px; font-size:12px; color:var(--cream-faint);">Kit MRP total: <span class="num">${money(itemsTotal(items))}</span></div></div>`;
+  }).join('') || `<div class="empty">No kit templates yet — build one above.</div>`;
 }
 
 /* ============================================================
@@ -1266,15 +1308,16 @@ function renderAdminOrders(){
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
-    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody>
-      ${o.productCodes.map((c,i)=>{
-        const p = findProduct(c);
-        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(c)}</td><td colspan="2" style="color:var(--rust);">Product no longer in catalog</td><td></td></tr>`;
-        return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`;
+    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
+      ${orderItems(o).map((it,i)=>{
+        const p = findProduct(it.code);
+        const qty = it.qty||1;
+        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
+        return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*qty)}</td></tr>`;
       }).join('')}
-      <tr><td colspan="4" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+      <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
-    <div class="view-desc" style="margin-top:4px;">${o.productCodes.length} item${o.productCodes.length===1?'':'s'} in this order</div>`;
+    <div class="view-desc" style="margin-top:4px;">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${orderItems(o).reduce((s,it)=>s+(it.qty||1),0)} units total</div>`;
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${o.status}">${o.status}</span></div>
       ${itemsTable}
       <div class="row" style="margin-top:12px;">
@@ -1437,13 +1480,14 @@ function orderCardHtml(o){
   const isConfirmed = o.status !== 'pending';
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
   const mrp = orderMrpTotal(o);
-  const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody>
-    ${o.productCodes.map((c,i)=>{
-      const p = findProduct(c);
-      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(c)}</td><td colspan="2" style="color:var(--rust);">Product no longer in catalog</td><td></td></tr>`;
-      return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`;
+  const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
+    ${orderItems(o).map((it,i)=>{
+      const p = findProduct(it.code);
+      const qty = it.qty||1;
+      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
+      return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*qty)}</td></tr>`;
     }).join('')}
-    <tr><td colspan="4" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+    <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
   </tbody></table></div>`;
   return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
     <div style="display:flex; gap:6px; align-items:center;">
@@ -1467,17 +1511,17 @@ function orderCardHtml(o){
 /* ============================================================
    DOCTOR: NEW ORDER
 ============================================================ */
-let orderDraftCodes = [];
+let orderDraftItems = []; // [{code, qty}]
 function renderNewOrderView(){
   const editing = editingOrderId ? myOrders().find(o=>o.id===editingOrderId) : null;
   if(editingOrderId && !editing){ editingOrderId = null; } // it vanished or was confirmed elsewhere meanwhile
-  orderDraftCodes = editing ? [...editing.productCodes] : [];
+  orderDraftItems = editing ? orderItems(editing).map(it=>({...it})) : [];
   document.getElementById('order-kit-select').innerHTML = `<option value="">— Build from scratch —</option>` + kitsArr().map(k=>`<option value="${k.id}">${k.name}</option>`).join('');
   document.getElementById('order-kit-select').value = '';
   document.getElementById('order-date').value = editing ? editing.date : new Date().toISOString().slice(0,10);
   document.getElementById('order-time').value = editing ? editing.time : '09:00';
   document.getElementById('order-form-title').textContent = editing ? 'Edit Order' : 'New Order';
-  document.getElementById('order-form-desc').textContent = editing ? "Update the items, date, or time — the Sante team will see your changes. This is only possible while the order is still pending confirmation." : 'Pick a kit template, customize it, and set the date & time.';
+  document.getElementById('order-form-desc').textContent = editing ? "Update the items, quantities, date, or time — the Sante team will see your changes. This is only possible while the order is still pending confirmation." : 'Pick a kit template, customize it, and set the date & time.';
   document.getElementById('place-order-btn').textContent = editing ? 'Save changes' : 'Place order';
   document.getElementById('cancel-edit-order-btn').style.display = editing ? 'inline-block' : 'none';
   renderOrderPills();
@@ -1485,7 +1529,7 @@ function renderNewOrderView(){
 function applyKitTemplate(){
   const kitId = document.getElementById('order-kit-select').value;
   const kit = kitsArr().find(k=>k.id===kitId);
-  orderDraftCodes = kit ? [...kit.productCodes] : [];
+  orderDraftItems = kit ? kitItems(kit).map(it=>({...it})) : [];
   renderOrderPills();
 }
 function renderOrderProductSearch(){
@@ -1496,17 +1540,57 @@ function renderOrderProductSearch(){
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
 }
-function addOrderProduct(code){ if(!orderDraftCodes.includes(code)) orderDraftCodes.push(code); document.getElementById('order-product-search').value=''; document.getElementById('order-product-results').style.display='none'; renderOrderPills(); }
-function removeOrderProduct(code){ orderDraftCodes = orderDraftCodes.filter(c=>c!==code); renderOrderPills(); }
+// Adding a product already in the order just bumps its quantity by one,
+// instead of being a no-op — this is what actually lets a doctor order
+// 2/3/4/5 of the same screw, either by adding it again or using the +/-
+// stepper on its pill.
+function addOrderProduct(code){
+  const existing = orderDraftItems.find(it=>it.code===code);
+  if(existing) existing.qty = (existing.qty||1) + 1;
+  else orderDraftItems.push({code, qty:1});
+  document.getElementById('order-product-search').value='';
+  document.getElementById('order-product-results').style.display='none';
+  renderOrderPills();
+}
+function removeOrderProduct(code){ orderDraftItems = orderDraftItems.filter(it=>it.code!==code); renderOrderPills(); }
+function incrementOrderQty(code){ const it=orderDraftItems.find(x=>x.code===code); if(it){ it.qty=(it.qty||1)+1; renderOrderPills(); } }
+function decrementOrderQty(code){
+  const it=orderDraftItems.find(x=>x.code===code);
+  if(!it) return;
+  it.qty = (it.qty||1) - 1;
+  if(it.qty <= 0) orderDraftItems = orderDraftItems.filter(x=>x.code!==code);
+  renderOrderPills();
+}
+function setOrderQty(code, value){
+  const qty = Math.max(1, Math.round(parseFloat(value)) || 1);
+  const it = orderDraftItems.find(x=>x.code===code);
+  if(it) it.qty = qty;
+  renderOrderPills();
+}
 function renderOrderPills(){
-  document.getElementById('order-items-pills').innerHTML = orderDraftCodes.map(c=>{ const p=findProduct(c); return `<span class="pill">${p.name} · ${money(p.mrp)} <button onclick="removeOrderProduct('${c}')">×</button></span>`; }).join('');
-  document.getElementById('order-mrp-preview').textContent = money(kitTotal(orderDraftCodes));
+  document.getElementById('order-items-pills').innerHTML = orderDraftItems.map(it=>{
+    const p=findProduct(it.code);
+    if(!p) return '';
+    const qty = it.qty||1;
+    return `<span class="pill">
+      <span>${escapeAttr(p.name)}</span>
+      <span style="display:inline-flex; align-items:center; gap:4px;">
+        <button type="button" onclick="decrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">−</button>
+        <input type="number" min="1" value="${qty}" onchange="setOrderQty('${it.code}', this.value)" style="width:40px; text-align:center; padding:2px; font-size:12px;">
+        <button type="button" onclick="incrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">+</button>
+      </span>
+      <span style="color:var(--cream-faint);">${money(p.mrp)} × ${qty} = ${money(p.mrp*qty)}</span>
+      <button onclick="removeOrderProduct('${it.code}')">×</button>
+    </span>`;
+  }).join('');
+  document.getElementById('order-mrp-preview').textContent = money(itemsTotal(orderDraftItems));
 }
 async function placeOrder(){
-  if(orderDraftCodes.length===0){ alert('Add at least one item to the order.'); return; }
+  if(orderDraftItems.length===0){ alert('Add at least one item to the order.'); return; }
   const date = document.getElementById('order-date').value;
   const time = document.getElementById('order-time').value;
   if(!date || !time){ alert('Set a date and time.'); return; }
+  const items = orderDraftItems.map(it=>({code:it.code, qty:it.qty||1}));
   if(editingOrderId){
     const o = myOrders().find(x=>x.id===editingOrderId);
     if(!o || o.status !== 'pending'){
@@ -1516,7 +1600,7 @@ async function placeOrder(){
       return;
     }
     try{
-      await db.ref('orders/'+editingOrderId).update({ productCodes:[...orderDraftCodes], date, time });
+      await db.ref('orders/'+editingOrderId).update({ items, productCodes:null, date, time });
       alert('Order updated.');
     }catch(err){
       alert('Could not save changes: ' + err.message);
@@ -1529,7 +1613,7 @@ async function placeOrder(){
   await db.ref('orders/' + uid('ord')).set({
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
-    productCodes: [...orderDraftCodes],
+    items,
     date, time, status:'pending', createdAt: new Date().toISOString()
   });
   alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
