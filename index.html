@@ -1261,8 +1261,16 @@ function renderAdminOrders(){
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
+    const itemsTable = `<table style="margin-top:10px;"><thead><tr><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th></tr></thead><tbody>
+      ${o.productCodes.map(c=>{
+        const p = findProduct(c);
+        if(!p) return `<tr><td class="num" style="color:var(--rust);">${escapeAttr(c)}</td><td colspan="2" style="color:var(--rust);">Product no longer in catalog</td><td></td></tr>`;
+        return `<tr><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td></tr>`;
+      }).join('')}
+    </tbody></table>
+    <div class="view-desc" style="margin-top:4px;">${o.productCodes.length} item${o.productCodes.length===1?'':'s'} in this order</div>`;
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${o.status}">${o.status}</span></div>
-      <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
+      ${itemsTable}
       <div class="row" style="margin-top:12px;">
         <div class="stat-card" style="padding:12px;"><div class="label">MRP</div><div class="value" style="font-size:16px;">${money(mrp)}</div></div>
         <div class="stat-card" style="padding:12px;"><div class="label">Discounted bill</div><div class="value amber" style="font-size:16px;">${money(disc)}</div></div>
@@ -1427,7 +1435,7 @@ function orderCardHtml(o){
       <span class="badge ${isConfirmed ? 'confirmed' : 'pending'}">${isConfirmed ? 'Confirmed' : 'Pending confirmation'}</span>
       ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
     </div></div>
-    <div class="manifest-items">${o.productCodes.map(c=>findProduct(c)?.name).join(' · ')}</div>
+    <div class="manifest-items" style="line-height:1.6;">${o.productCodes.map(c=>{ const p=findProduct(c); return p ? `${escapeAttr(p.name)} <span style="color:var(--cream-faint);">(${money(p.mrp)})</span>` : `<span style="color:var(--rust);">${escapeAttr(c)} — no longer in catalog</span>`; }).join('<br>')}</div>
     <div class="row" style="margin-top:10px;">
       <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(orderMrpTotal(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Billed</div><div class="value amber" style="font-size:14px;">${money(disc)}</div></div>
