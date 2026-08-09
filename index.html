@@ -819,7 +819,12 @@ const kitTotal = itemsTotal; // kept as an alias since some call-sites still say
 // confusing ₹1 mismatch on a balance — exactly what happened with Dr Pooja's
 // order. Rounding here means the number used in every calculation always
 // matches what's shown on screen.
-function orderMrpTotal(o){ return itemsTotal(orderItems(o)); }
+// If Admin has marked an item "not available" on this order, it's excluded
+// from billing entirely — a doctor shouldn't be charged (or earn incentive)
+// on something that isn't actually being fulfilled. It stays visible in the
+// item table (crossed out) for a clear record, just not counted in totals.
+function orderBillableItems(o){ return orderItems(o).filter(it=>!it.unavailable); }
+function orderMrpTotal(o){ return itemsTotal(orderBillableItems(o)); }
 // Discount and incentive are independent rates — discount reduces what the
 // doctor is billed; incentive is a separate commission paid out to them/
 // their staff. Each order uses the doctor's default discount rate UNLESS
@@ -1322,6 +1327,16 @@ async function deleteDoctor(id){
 /* ============================================================
    ADMIN: ORDERS
 ============================================================ */
+function orderStatusLabel(o){
+  if(o.status === 'confirmed') return 'confirmed';
+  if(o.status === 'needs_review') return 'needs doctor review';
+  return 'pending';
+}
+function orderStatusBadgeClass(o){
+  if(o.status === 'confirmed') return 'confirmed';
+  if(o.status === 'needs_review') return 'partial';
+  return 'pending';
+}
 function renderAdminOrders(){
   const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-orders-list').innerHTML = list.length ? list.map(o=>{
@@ -1330,19 +1345,27 @@ function renderAdminOrders(){
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
     const discPct = effectiveDiscountPct(o);
     const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
+    const items = orderItems(o);
+    const hasUnavailable = items.some(it=>it.unavailable);
+    const locked = o.status === 'confirmed';
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
-    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
-      ${orderItems(o).map((it,i)=>{
+    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th><th>Availability</th></tr></thead><tbody>
+      ${items.map((it,i)=>{
         const p = findProduct(it.code);
         const qty = it.qty||1;
-        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
-        return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*qty)}</td></tr>`;
+        const strike = it.unavailable ? 'text-decoration:line-through; color:var(--cream-faint);' : '';
+        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td><td></td></tr>`;
+        return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${it.unavailable ? '—' : money(p.mrp*qty)}</td><td style="white-space:nowrap;">
+          ${it.unavailable ? `<span style="color:var(--rust); font-size:11px;">NOT AVAILABLE</span>` : ''}
+          ${!locked ? `<button class="btn btn-outline btn-sm" onclick="toggleItemAvailability('${o.id}',${i})">${it.unavailable ? 'Mark available' : 'Mark unavailable'}</button>` : ''}
+        </td></tr>`;
       }).join('')}
-      <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+      <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable items)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td><td></td></tr>
     </tbody></table></div>
-    <div class="view-desc" style="margin-top:4px;">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${orderItems(o).reduce((s,it)=>s+(it.qty||1),0)} units total</div>`;
-    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${o.status}">${o.status}</span></div>
+    <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total</div>`;
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
+      ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable item(s) and wants to proceed — ready for final confirmation.</div>` : ''}
       ${itemsTable}
       <div class="row" style="margin-top:12px;">
         <div class="stat-card" style="padding:12px;"><div class="label">MRP</div><div class="value" style="font-size:16px;">${money(mrp)}</div></div>
@@ -1364,10 +1387,41 @@ function renderAdminOrders(){
       </div>
       <div class="whatsapp-box">${msg}</div>
       <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
-        ${o.status==='pending' ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
+        ${!locked ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
+        ${hasUnavailable && !locked ? `<button class="btn btn-outline btn-sm" onclick="notifyDoctorUnavailable('${o.id}')" style="color:var(--amber-bright);">Notify doctor of unavailable item(s)</button>` : ''}
         ${waLink ? `<a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">No orders yet.</div>`;
+}
+async function toggleItemAvailability(orderId, idx){
+  const o = ordersArr().find(x=>x.id===orderId);
+  if(!o) return;
+  const items = orderItems(o).map(it=>({...it}));
+  if(!items[idx]) return;
+  items[idx].unavailable = !items[idx].unavailable;
+  try{
+    await db.ref(`orders/${orderId}/items`).set(items);
+  }catch(err){
+    alert('Could not update availability: ' + err.message);
+  }
+}
+async function notifyDoctorUnavailable(orderId){
+  const o = ordersArr().find(x=>x.id===orderId);
+  if(!o) return;
+  const unavailableItems = orderItems(o).filter(it=>it.unavailable);
+  if(!unavailableItems.length){ alert('No items are currently marked unavailable on this order.'); return; }
+  try{
+    await db.ref(`orders/${orderId}`).update({ status:'needs_review', doctorAcknowledgedUnavailable:false });
+  }catch(err){
+    alert('Could not update this order: ' + err.message);
+    return;
+  }
+  const doc = findDocSafe(o.doctorId);
+  const names = unavailableItems.map(it=>{ const p=findProduct(it.code); return p ? p.name : it.code; }).join(', ');
+  const msg = `Hello ${doc.name}, your order has been reviewed. Unfortunately the following item(s) are not available right now: ${names}.\nThe rest of your order can still go ahead. Please open the app to let us know if you'd like to proceed without these — we'll finalize the order once you confirm.\n— Sante Life Science`;
+  const billPhone = doc.accounts.doctor.phone;
+  if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  else alert('Doctor notified in-app. (No phone on file, so no WhatsApp message was sent.)');
 }
 async function setOrderDiscount(orderId){
   const val = document.getElementById(`disc-override-${orderId}`).value;
@@ -1386,7 +1440,13 @@ async function resetOrderDiscount(orderId){
     alert('Could not reset the discount: ' + err.message);
   }
 }
-async function confirmOrder(id){ await db.ref('orders/'+id+'/status').set('confirmed'); }
+async function confirmOrder(id){
+  const o = ordersArr().find(x=>x.id===id);
+  if(o && o.status === 'needs_review' && !o.doctorAcknowledgedUnavailable){
+    if(!confirm("The doctor hasn't acknowledged the unavailable item(s) on this order yet. Confirm anyway?")) return;
+  }
+  await db.ref('orders/'+id+'/status').set('confirmed');
+}
 
 /* ============================================================
    ADMIN: LEDGER & PAYOUTS
@@ -1531,23 +1591,40 @@ function renderDocDashboard(){
 }
 function orderCardHtml(o){
   const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
-  const isConfirmed = o.status !== 'pending';
+  const isConfirmed = o.status === 'confirmed';
+  const needsReview = o.status === 'needs_review';
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
   const mrp = orderMrpTotal(o);
+  const items = orderItems(o);
+  const unavailableItems = items.filter(it=>it.unavailable);
   const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
-    ${orderItems(o).map((it,i)=>{
+    ${items.map((it,i)=>{
       const p = findProduct(it.code);
       const qty = it.qty||1;
+      const strike = it.unavailable ? 'text-decoration:line-through; color:var(--cream-faint);' : '';
       if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
-      return `<tr><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*qty)}</td></tr>`;
+      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.unavailable ? ` <span style="color:var(--rust); font-size:11px;">(not available)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${it.unavailable ? '—' : money(p.mrp*qty)}</td></tr>`;
     }).join('')}
     <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
   </tbody></table></div>`;
+  const statusBadge = isConfirmed ? `<span class="badge confirmed">Confirmed</span>`
+    : needsReview ? `<span class="badge partial">Action needed</span>`
+    : `<span class="badge pending">Pending confirmation</span>`;
+  const unavailableBanner = needsReview ? `<div style="border:1px solid var(--rust); padding:10px; margin:10px 0; font-size:13px;">
+      <div style="color:var(--rust); margin-bottom:6px;">Some item(s) in this order aren't available right now: <b>${unavailableItems.map(it=>{const p=findProduct(it.code); return p?p.name:it.code;}).join(', ')}</b></div>
+      <div style="color:var(--cream-dim); margin-bottom:8px;">You can proceed without them, edit the order yourself, or cancel it entirely.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="acknowledgeUnavailable('${o.id}')">Proceed without these</button>
+        <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit order</button>
+        <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>
+      </div>
+    </div>` : '';
   return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
     <div style="display:flex; gap:6px; align-items:center;">
-      <span class="badge ${isConfirmed ? 'confirmed' : 'pending'}">${isConfirmed ? 'Confirmed' : 'Pending confirmation'}</span>
+      ${statusBadge}
       ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
     </div></div>
+    ${unavailableBanner}
     ${itemsTable}
     <div class="row" style="margin-top:10px;">
       <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(mrp)}</div></div>
@@ -1555,11 +1632,19 @@ function orderCardHtml(o){
       <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
     </div>
-    ${!isConfirmed ? `<div style="margin-top:10px; display:flex; gap:8px;">
+    ${!isConfirmed && !needsReview ? `<div style="margin-top:10px; display:flex; gap:8px;">
       <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit</button>
       <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>
-    </div>` : `<div class="hint" style="margin:10px 0 0; font-size:11px;">This order is confirmed and locked — contact the Sante team for any changes.</div>`}
+    </div>` : isConfirmed ? `<div class="hint" style="margin:10px 0 0; font-size:11px;">This order is confirmed and locked — contact the Sante team for any changes.</div>` : ''}
     </div>`;
+}
+async function acknowledgeUnavailable(orderId){
+  if(!confirm("Proceed with this order without the unavailable item(s)? It'll go back to the Sante team for final confirmation.")) return;
+  try{
+    await db.ref('orders/'+orderId).update({ status:'pending', doctorAcknowledgedUnavailable:true });
+  }catch(err){
+    alert('Could not update: ' + err.message);
+  }
 }
 
 /* ============================================================
@@ -1647,14 +1732,18 @@ async function placeOrder(){
   const items = orderDraftItems.map(it=>({code:it.code, qty:it.qty||1}));
   if(editingOrderId){
     const o = myOrders().find(x=>x.id===editingOrderId);
-    if(!o || o.status !== 'pending'){
+    if(!o || o.status === 'confirmed'){
       alert('This order can no longer be edited — it has already been confirmed.');
       editingOrderId = null;
       showView('doc-orders');
       return;
     }
+    // Editing implicitly resolves an "action needed" (unavailable item) state —
+    // it goes back to a normal pending order for Admin's final review.
+    const updatePayload = { items, productCodes:null, date, time };
+    if(o.status === 'needs_review') Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
     try{
-      await db.ref('orders/'+editingOrderId).update({ items, productCodes:null, date, time });
+      await db.ref('orders/'+editingOrderId).update(updatePayload);
       alert('Order updated.');
     }catch(err){
       alert('Could not save changes: ' + err.message);
@@ -1676,7 +1765,7 @@ async function placeOrder(){
 function editOrder(id){
   const o = myOrders().find(x=>x.id===id);
   if(!o) return;
-  if(o.status !== 'pending'){ alert('This order has already been confirmed and can no longer be edited.'); return; }
+  if(o.status === 'confirmed'){ alert('This order has already been confirmed and can no longer be edited.'); return; }
   editingOrderId = id;
   showView('doc-neworder');
 }
@@ -1687,7 +1776,7 @@ function cancelEditOrder(){
 async function deleteMyOrder(id){
   const o = myOrders().find(x=>x.id===id);
   if(!o) return;
-  if(o.status !== 'pending'){ alert('This order has already been confirmed and can no longer be deleted.'); return; }
+  if(o.status === 'confirmed'){ alert('This order has already been confirmed and can no longer be deleted.'); return; }
   if(!confirm('Delete this order? This cannot be undone.')) return;
   try{
     await db.ref('orders/'+id).remove();
