@@ -377,6 +377,20 @@
         <div id="doctors-list"></div>
       </div>
 
+      <!-- ===== ADMIN: Doctor Reports ===== -->
+      <div class="view" id="v-admin-reports">
+        <div class="view-header">
+          <div class="eyebrow">Reports</div>
+          <div class="view-title serif">Doctor Summary</div>
+          <div class="view-desc">Month-by-month and order-by-order totals for one doctor — MRP, billed, paid, and balance at a glance.</div>
+        </div>
+        <div class="panel">
+          <label class="small">Doctor</label>
+          <select id="report-doctor-select" onchange="onReportDoctorChange()"></select>
+        </div>
+        <div id="admin-report-body"></div>
+      </div>
+
       <!-- ===== ADMIN: Orders ===== -->
       <div class="view" id="v-admin-orders">
         <div class="view-header"><div class="eyebrow">Queue</div><div class="view-title serif">Orders</div><div class="view-desc">Review, confirm, and send the WhatsApp bill.</div></div>
@@ -766,7 +780,7 @@ function refreshWho(){
 /* ============================================================
    SIDEBAR / ROUTING
 ============================================================ */
-const ADMIN_NAV = [['admin-dashboard','Dashboard'],['admin-products','Products'],['admin-kits','Kits'],['admin-doctors','Doctors'],['admin-orders','Orders'],['admin-ledger','Ledger & Payouts']];
+const ADMIN_NAV = [['admin-dashboard','Dashboard'],['admin-products','Products'],['admin-kits','Kits'],['admin-doctors','Doctors'],['admin-reports','Reports'],['admin-orders','Orders'],['admin-ledger','Ledger & Payouts']];
 const DOC_NAV = [['doc-dashboard','Dashboard'],['doc-neworder','New Order'],['doc-orders','My Orders'],['doc-ledger','My Ledger']];
 
 function buildSidebar(){
@@ -782,6 +796,7 @@ function showView(id, silent){
   if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); }
   if(id==='admin-kits') renderKitsList();
   if(id==='admin-doctors') renderDoctorsList();
+  if(id==='admin-reports') renderAdminReports();
   if(id==='admin-orders') renderAdminOrders();
   if(id==='admin-ledger') renderAdminLedger();
   if(id==='doc-dashboard') renderDocDashboard();
@@ -1287,6 +1302,7 @@ function renderDoctorsList(){
         <span class="tray-dots">${d.discountPct??d.incentivePct??0}% DISCOUNT · ${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span>
       </div>
       <div style="display:flex; gap:8px; margin:6px 0 12px;">
+        <button class="btn btn-outline btn-sm" onclick="viewDoctorReport('${d.id}')">View report</button>
         <button class="btn btn-outline btn-sm" onclick="startEditDoctor('${d.id}')">Edit name / discount / incentive / due days</button>
         <button class="btn btn-outline btn-sm" onclick="deleteDoctor('${d.id}')" style="color:var(--rust);">Delete doctor</button>
       </div>`;
@@ -1322,6 +1338,99 @@ async function deleteDoctor(id){
   }catch(err){
     alert('Could not delete: ' + err.message);
   }
+}
+
+/* ============================================================
+   ADMIN: DOCTOR REPORTS
+   One doctor's whole payment picture — monthly totals plus a
+   full order-by-order table with paid/due status. Selected doctor
+   is kept in a module-level variable (not the DB) since it's just
+   a view preference, not data — same pattern as payoutDraft/editingDoctorId.
+============================================================ */
+let selectedReportDoctorId = null;
+function viewDoctorReport(doctorId){
+  selectedReportDoctorId = doctorId;
+  showView('admin-reports');
+}
+function onReportDoctorChange(){
+  selectedReportDoctorId = document.getElementById('report-doctor-select').value || null;
+  renderAdminReports();
+}
+function renderAdminReports(){
+  const doctors = doctorsArr();
+  const sel = document.getElementById('report-doctor-select');
+  if(!selectedReportDoctorId && doctors.length) selectedReportDoctorId = doctors[0].id;
+  sel.innerHTML = doctors.length
+    ? doctors.map(d=>`<option value="${d.id}" ${d.id===selectedReportDoctorId?'selected':''}>${escapeAttr(d.name)}</option>`).join('')
+    : `<option value="">No doctors yet</option>`;
+
+  const body = document.getElementById('admin-report-body');
+  if(!selectedReportDoctorId){ body.innerHTML = `<div class="empty">Add a doctor first to see their report.</div>`; return; }
+
+  // Cancelled orders never had a real bill, so they're excluded here —
+  // same as everywhere else in the app that totals up money.
+  const orders = ordersArr().filter(o=>o.doctorId===selectedReportDoctorId && o.status!=='cancelled').sort((a,b)=> a.date<b.date?1:-1);
+
+  const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
+  const totalBilled = orders.reduce((s,o)=>s+orderDiscounted(o),0);
+  const totalPaid = orders.reduce((s,o)=>s+orderPaid(o),0);
+  const totalDue = totalBilled - totalPaid;
+
+  const statsHtml = `<div class="stat-row">
+    <div class="stat-card"><div class="label">Total orders</div><div class="value">${orders.length}</div></div>
+    <div class="stat-card"><div class="label">Total MRP</div><div class="value">${money(totalMrp)}</div></div>
+    <div class="stat-card"><div class="label">Total billed</div><div class="value amber">${money(totalBilled)}</div></div>
+    <div class="stat-card"><div class="label">Total paid</div><div class="value sage">${money(totalPaid)}</div></div>
+    <div class="stat-card"><div class="label">Outstanding</div><div class="value" style="color:${totalDue>0?'var(--rust)':'var(--sage)'}">${money(totalDue)}</div></div>
+  </div>`;
+
+  const byMonth = {};
+  orders.forEach(o=>{
+    const m = o.date.slice(0,7);
+    byMonth[m] = byMonth[m] || {count:0, mrp:0, billed:0, paid:0};
+    byMonth[m].count++;
+    byMonth[m].mrp += orderMrpTotal(o);
+    byMonth[m].billed += orderDiscounted(o);
+    byMonth[m].paid += orderPaid(o);
+  });
+  const months = Object.keys(byMonth).sort().reverse();
+  const monthlyHtml = `<div class="panel">
+    <div class="panel-title">Monthly summary</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Month</th><th style="text-align:right;">Orders</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th></tr></thead>
+      <tbody>
+        ${months.length ? months.map(m=>{
+          const r = byMonth[m];
+          const bal = r.billed - r.paid;
+          return `<tr><td>${m}</td><td class="num" style="text-align:right;">${r.count}</td><td class="num" style="text-align:right;">${money(r.mrp)}</td><td class="num" style="text-align:right;">${money(r.billed)}</td><td class="num" style="text-align:right;">${money(r.paid)}</td><td class="num" style="text-align:right; color:${bal>0?'var(--rust)':'var(--sage)'}">${money(bal)}</td></tr>`;
+        }).join('') : `<tr><td colspan="6" class="empty">No orders yet.</td></tr>`}
+      </tbody>
+    </table></div>
+  </div>`;
+
+  const orderRowsHtml = orders.map(o=>{
+    const disc = orderDiscounted(o), paid = orderPaid(o), bal = disc-paid;
+    const payStatus = o.status==='pending' || o.status==='needs_review' ? o.status : (bal<=0?'paid':(paid>0?'partial':'due'));
+    const statusLabel = payStatus==='pending' ? 'awaiting confirm' : (payStatus==='needs_review' ? 'needs review' : payStatus);
+    return `<tr>
+      <td>${o.date}</td>
+      <td class="num" style="text-align:right;">${orderItems(o).length}</td>
+      <td class="num" style="text-align:right;">${money(orderMrpTotal(o))}</td>
+      <td class="num" style="text-align:right;">${money(disc)}</td>
+      <td class="num" style="text-align:right;">${money(paid)}</td>
+      <td class="num" style="text-align:right; color:${bal>0?'var(--rust)':'var(--sage)'}">${money(bal)}</td>
+      <td><span class="badge ${payStatus==='needs_review' ? 'due' : payStatus}">${statusLabel}</span></td>
+    </tr>`;
+  }).join('');
+  const ordersHtml = `<div class="panel">
+    <div class="panel-title">All orders</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th style="text-align:right;">Items</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th>Status</th></tr></thead>
+      <tbody>${orders.length ? orderRowsHtml : `<tr><td colspan="7" class="empty">No orders yet.</td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+
+  body.innerHTML = statsHtml + monthlyHtml + ordersHtml;
 }
 
 /* ============================================================
