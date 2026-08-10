@@ -20,6 +20,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 
 <style>
   :root{
@@ -377,6 +379,20 @@
         <div id="doctors-list"></div>
       </div>
 
+      <!-- ===== ADMIN: Reports ===== -->
+      <div class="view" id="v-admin-reports">
+        <div class="view-header">
+          <div class="eyebrow">Reports</div>
+          <div class="view-title serif">Doctor Summary</div>
+          <div class="view-desc">Month-by-month and order-by-order totals for one doctor — MRP, billed, paid, incentive, and balance at a glance.</div>
+        </div>
+        <div class="panel">
+          <label class="small">Doctor</label>
+          <select id="report-doctor-select" onchange="renderAdminReports()"></select>
+        </div>
+        <div id="report-content"></div>
+      </div>
+
       <!-- ===== ADMIN: Orders ===== -->
       <div class="view" id="v-admin-orders">
         <div class="view-header"><div class="eyebrow">Queue</div><div class="view-title serif">Orders</div><div class="view-desc">Review, confirm, and send the WhatsApp bill.</div></div>
@@ -439,6 +455,12 @@
           <div class="table-wrap"><table><thead><tr><th>Month</th><th style="text-align:right;">Orders</th><th style="text-align:right;">MRP Total</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Incentive</th></tr></thead><tbody id="doc-monthly-body"></tbody></table></div>
         </div>
         <div class="panel"><div class="panel-title">Incentive payouts received</div><div id="doc-payouts-list"></div></div>
+      </div>
+
+      <!-- ===== DOCTOR: My Report ===== -->
+      <div class="view" id="v-doc-report">
+        <div class="view-header"><div class="eyebrow">Reports</div><div class="view-title serif">My Report</div><div class="view-desc">Your full order history, billing, and incentive summary — downloadable as a PDF statement or CSV.</div></div>
+        <div id="doc-report-content"></div>
       </div>
 
     </div>
@@ -766,8 +788,8 @@ function refreshWho(){
 /* ============================================================
    SIDEBAR / ROUTING
 ============================================================ */
-const ADMIN_NAV = [['admin-dashboard','Dashboard'],['admin-products','Products'],['admin-kits','Kits'],['admin-doctors','Doctors'],['admin-orders','Orders'],['admin-ledger','Ledger & Payouts']];
-const DOC_NAV = [['doc-dashboard','Dashboard'],['doc-neworder','New Order'],['doc-orders','My Orders'],['doc-ledger','My Ledger']];
+const ADMIN_NAV = [['admin-dashboard','Dashboard'],['admin-products','Products'],['admin-kits','Kits'],['admin-doctors','Doctors'],['admin-reports','Reports'],['admin-orders','Orders'],['admin-ledger','Ledger & Payouts']];
+const DOC_NAV = [['doc-dashboard','Dashboard'],['doc-neworder','New Order'],['doc-orders','My Orders'],['doc-ledger','My Ledger'],['doc-report','My Report']];
 
 function buildSidebar(){
   const nav = SESSION.role==='admin' ? ADMIN_NAV : DOC_NAV;
@@ -782,12 +804,14 @@ function showView(id, silent){
   if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); }
   if(id==='admin-kits') renderKitsList();
   if(id==='admin-doctors') renderDoctorsList();
+  if(id==='admin-reports') renderAdminReports();
   if(id==='admin-orders') renderAdminOrders();
   if(id==='admin-ledger') renderAdminLedger();
   if(id==='doc-dashboard') renderDocDashboard();
   if(id==='doc-neworder' && !silent) renderNewOrderView();
   if(id==='doc-orders') renderDocOrders();
   if(id==='doc-ledger') renderDocLedger();
+  if(id==='doc-report') renderDocReport();
 }
 
 /* ============================================================
@@ -1837,6 +1861,180 @@ function renderDocLedger(){
     const total = p.payees.reduce((s,x)=>s+x.amount,0);
     return `<div class="manifest"><div class="manifest-head"><span class="kit-name">${money(total)} paid</span><span class="kit-code">${p.date}</span></div><div class="manifest-items">${p.payees.map(x=>`${money(x.amount)} → ${x.name}`).join(' · ')}</div></div>`;
   }).join('') : `<div class="empty">No incentive payouts recorded yet.</div>`;
+}
+
+/* ============================================================
+   REPORTS (shared by Admin's per-doctor view and the doctor's own "My Report")
+============================================================ */
+function buildDoctorReportData(doctorId){
+  const doc = findDocSafe(doctorId);
+  const orders = ordersArr().filter(o=>o.doctorId===doctorId).sort((a,b)=> a.date<b.date?1:-1);
+  const rows = orders.map(o=>{
+    const mrp=orderMrpTotal(o), disc=orderDiscounted(o), paid=orderPaid(o), inc=orderIncentive(o);
+    const incPaid = payoutsArr().filter(p=>p.orderId===o.id).reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
+    return { o, mrp, disc, paid, balance: disc-paid, inc, incPaid, incBalance: inc-incPaid, discPct: effectiveDiscountPct(o) };
+  });
+  const totals = rows.reduce((acc,r)=>({
+    orders: acc.orders+1, mrp: acc.mrp+r.mrp, billed: acc.billed+r.disc, paid: acc.paid+r.paid,
+    incentive: acc.incentive+r.inc, incentivePaid: acc.incentivePaid+r.incPaid
+  }), {orders:0, mrp:0, billed:0, paid:0, incentive:0, incentivePaid:0});
+  totals.outstanding = totals.billed - totals.paid;
+  totals.incentiveOutstanding = totals.incentive - totals.incentivePaid;
+  const monthMap = {};
+  rows.forEach(r=>{
+    const m = r.o.date.slice(0,7);
+    if(!monthMap[m]) monthMap[m] = {month:m, orders:0, mrp:0, billed:0, paid:0, incentive:0, incentivePaid:0};
+    monthMap[m].orders++; monthMap[m].mrp+=r.mrp; monthMap[m].billed+=r.disc; monthMap[m].paid+=r.paid;
+    monthMap[m].incentive+=r.inc; monthMap[m].incentivePaid+=r.incPaid;
+  });
+  const monthly = Object.values(monthMap).sort((a,b)=> b.month.localeCompare(a.month));
+  monthly.forEach(m=>{ m.balance = m.billed-m.paid; m.incentiveBalance = m.incentive-m.incentivePaid; });
+  return { doc, rows, totals, monthly };
+}
+function renderDoctorReportBody(containerId, doctorId){
+  const container = document.getElementById(containerId);
+  if(!doctorId){ container.innerHTML = `<div class="empty">No doctor selected.</div>`; return; }
+  const { doc, rows, totals, monthly } = buildDoctorReportData(doctorId);
+  const selectId = `report-month-select-${containerId}`;
+  container.innerHTML = `
+    <div class="row" style="margin-top:10px;">
+      <div class="stat-card" style="padding:14px;"><div class="label">Total orders</div><div class="value" style="font-size:20px;">${totals.orders}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Total MRP</div><div class="value" style="font-size:20px;">${money(totals.mrp)}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Total billed</div><div class="value amber" style="font-size:20px;">${money(totals.billed)}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Total paid</div><div class="value sage" style="font-size:20px;">${money(totals.paid)}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Outstanding</div><div class="value" style="font-size:20px; color:${totals.outstanding>0?'var(--rust)':'var(--sage)'}">${money(totals.outstanding)}</div></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div class="stat-card" style="padding:14px;"><div class="label">Incentive earned</div><div class="value amber" style="font-size:20px;">${money(totals.incentive)}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Incentive paid</div><div class="value sage" style="font-size:20px;">${money(totals.incentivePaid)}</div></div>
+      <div class="stat-card" style="padding:14px;"><div class="label">Incentive still owed</div><div class="value" style="font-size:20px; color:${totals.incentiveOutstanding>0?'var(--rust)':'var(--sage)'}">${money(totals.incentiveOutstanding)}</div></div>
+    </div>
+    <div class="panel" style="margin-top:20px;">
+      <div class="panel-title">Monthly summary</div>
+      <div class="table-wrap"><table><thead><tr><th>Month</th><th style="text-align:right;">Orders</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Incentive</th><th style="text-align:right;">Inc. Paid</th><th style="text-align:right;">Inc. Balance</th></tr></thead>
+      <tbody>${monthly.length ? monthly.map(m=>`<tr><td>${m.month}</td><td class="num" style="text-align:right;">${m.orders}</td><td class="num" style="text-align:right;">${money(m.mrp)}</td><td class="num" style="text-align:right;">${money(m.billed)}</td><td class="num" style="text-align:right;">${money(m.paid)}</td><td class="num" style="text-align:right; color:${m.balance>0?'var(--rust)':'var(--sage)'}">${money(m.balance)}</td><td class="num" style="text-align:right;">${money(m.incentive)}</td><td class="num" style="text-align:right;">${money(m.incentivePaid)}</td><td class="num" style="text-align:right;">${money(m.incentiveBalance)}</td></tr>`).join('') : `<tr><td colspan="9" class="empty">No orders yet.</td></tr>`}</tbody></table></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-title">All orders</div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th style="text-align:center;">Items</th><th>Status</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Incentive</th><th style="text-align:right;">Inc. Paid</th></tr></thead>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${r.o.date} ${r.o.time}</td><td class="num" style="text-align:center;">${orderItems(r.o).length}</td><td><span class="badge ${orderStatusBadgeClass(r.o)}">${orderStatusLabel(r.o)}</span></td><td class="num" style="text-align:right;">${money(r.mrp)}</td><td class="num" style="text-align:right;">${money(r.disc)}</td><td class="num" style="text-align:right;">${money(r.paid)}</td><td class="num" style="text-align:right; color:${r.balance>0?'var(--rust)':'var(--sage)'}">${money(r.balance)}</td><td class="num" style="text-align:right;">${money(r.inc)}</td><td class="num" style="text-align:right;">${money(r.incPaid)}</td></tr>`).join('') : `<tr><td colspan="9" class="empty">No orders yet.</td></tr>`}</tbody></table></div>
+    </div>
+    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; align-items:center;">
+      <label class="small" style="margin:0;">Statement period</label>
+      <select id="${selectId}">
+        <option value="">All-time (from first order to date)</option>
+        ${monthly.map(m=>`<option value="${m.month}">${m.month}</option>`).join('')}
+      </select>
+      <button class="btn btn-sm" onclick="downloadReportPdf('${doctorId}', document.getElementById('${selectId}').value)">Download PDF</button>
+      <button class="btn btn-outline btn-sm" onclick="downloadReportCsv('${doctorId}', document.getElementById('${selectId}').value)">Download CSV</button>
+    </div>`;
+}
+function renderAdminReports(){
+  const sel = document.getElementById('report-doctor-select');
+  const currentVal = sel.value;
+  const docs = doctorsArr();
+  sel.innerHTML = docs.length ? docs.map(d=>`<option value="${d.id}">${escapeAttr(d.name)}</option>`).join('') : `<option value="">No doctors yet</option>`;
+  if(currentVal && docs.some(d=>d.id===currentVal)) sel.value = currentVal;
+  renderDoctorReportBody('report-content', sel.value);
+}
+function renderDocReport(){
+  renderDoctorReportBody('doc-report-content', SESSION.doctorId);
+}
+async function loadLogoDataUrl(){
+  try{
+    const res = await fetch('icons/icon-512.png');
+    const blob = await res.blob();
+    return await new Promise((resolve,reject)=>{
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }catch(e){ return null; }
+}
+function reportRowsForPeriod(allRows, month){
+  return month ? allRows.filter(r=> r.o.date.slice(0,7)===month) : allRows;
+}
+function totalsFromRows(rows){
+  const t = rows.reduce((acc,r)=>({
+    mrp: acc.mrp+r.mrp, billed: acc.billed+r.disc, paid: acc.paid+r.paid,
+    incentive: acc.incentive+r.inc, incentivePaid: acc.incentivePaid+r.incPaid
+  }), {mrp:0, billed:0, paid:0, incentive:0, incentivePaid:0});
+  t.orders = rows.length;
+  t.outstanding = t.billed - t.paid;
+  t.incentiveOutstanding = t.incentive - t.incentivePaid;
+  return t;
+}
+async function downloadReportPdf(doctorId, month){
+  const { doc: d, rows: allRows } = buildDoctorReportData(doctorId);
+  const rows = reportRowsForPeriod(allRows, month);
+  const totals = totalsFromRows(rows);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({unit:'pt', format:'a4'});
+  const logo = await loadLogoDataUrl();
+  let y = 44;
+  if(logo){ try{ pdf.addImage(logo, 'PNG', 40, y-6, 36, 36); }catch(e){} }
+  const textX = logo ? 86 : 40;
+  pdf.setFont('times','bold'); pdf.setFontSize(20); pdf.setTextColor(30,24,18);
+  pdf.text('Sante Life Science', textX, y+14);
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(140,110,70);
+  pdf.text('KIT DESK', textX, y+28);
+  pdf.setTextColor(0);
+  y += 56;
+  pdf.setDrawColor(210); pdf.line(40, y, 555, y); y += 22;
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(13);
+  pdf.text(`Doctor Statement — ${d.name}`, 40, y); y += 16;
+  pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(90);
+  pdf.text(`Period: ${month ? month : 'All-time (from first order to date)'}`, 40, y); y += 13;
+  pdf.text(`Generated: ${new Date().toLocaleString('en-IN')}`, 40, y); y += 13;
+  pdf.text(`Discount rate: ${d.discountPct??d.incentivePct??0}%   ·   Incentive rate: ${d.incentivePct??0}%   ·   Payment due: ${d.dueDays??30} days`, 40, y); y += 20;
+  pdf.setTextColor(0);
+  pdf.autoTable({
+    startY: y,
+    head: [['Metric','Amount']],
+    body: [
+      ['Total orders', String(totals.orders)],
+      ['Total MRP', money(totals.mrp)],
+      ['Total billed', money(totals.billed)],
+      ['Total paid', money(totals.paid)],
+      ['Outstanding balance', money(totals.outstanding)],
+      ['Incentive earned', money(totals.incentive)],
+      ['Incentive paid out', money(totals.incentivePaid)],
+      ['Incentive still owed', money(totals.incentiveOutstanding)],
+    ],
+    theme:'grid', styles:{fontSize:9, cellPadding:5}, headStyles:{fillColor:[45,34,24]}, columnStyles:{0:{fontStyle:'bold'}},
+    margin:{left:40, right:40}
+  });
+  y = pdf.lastAutoTable.finalY + 22;
+  pdf.setFont('helvetica','bold'); pdf.setFontSize(11); pdf.text('Order detail', 40, y); y += 8;
+  pdf.autoTable({
+    startY: y,
+    head: [['Date','Time','Status','Items','MRP','Disc %','Billed','Paid','Balance','Incentive','Inc. Paid']],
+    body: rows.map(r=>[r.o.date, r.o.time, orderStatusLabel(r.o), String(orderItems(r.o).length), money(r.mrp), r.discPct+'%', money(r.disc), money(r.paid), money(r.balance), money(r.inc), money(r.incPaid)]),
+    theme:'striped', styles:{fontSize:7.5, cellPadding:4}, headStyles:{fillColor:[45,34,24], fontSize:7.5},
+    margin:{left:40, right:40},
+    didDrawPage: (data) => {
+      pdf.setFontSize(8); pdf.setTextColor(150);
+      pdf.text(`Sante Life Science — ${d.name} — page ${pdf.internal.getNumberOfPages()}`, 40, pdf.internal.pageSize.getHeight()-20);
+    }
+  });
+  pdf.save(`${d.name.replace(/\s+/g,'_')}_${month||'all-time'}_statement.pdf`);
+}
+function downloadReportCsv(doctorId, month){
+  const { doc: d, rows: allRows } = buildDoctorReportData(doctorId);
+  const rows = reportRowsForPeriod(allRows, month);
+  const header = ['Date','Time','Status','Items','MRP','Discount %','Billed','Paid','Balance','Incentive','Incentive Paid','Incentive Balance'];
+  const csvRows = rows.map(r=>[r.o.date, r.o.time, orderStatusLabel(r.o), orderItems(r.o).length, r.mrp, r.discPct, r.disc, r.paid, r.balance, r.inc, r.incPaid, r.incBalance]);
+  const csv = [header, ...csvRows].map(row=>row.map(v=>{
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  }).join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${d.name.replace(/\s+/g,'_')}_${month||'all-time'}_report.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ============================================================
