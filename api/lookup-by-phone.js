@@ -4,9 +4,9 @@
 // does that lookup server-side, using the admin credential, and returns only
 // the minimum needed to continue the login flow — never the PIN hash or the
 // stored public key.
-const { adminDb, withJsonHandler } = require('./_firebaseAdmin');
+import { adminDb, withJsonHandler } from './_firebaseAdmin.js';
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const cleanPhone = String(body.phone || '').replace(/[^\d]/g, '');
   if (!cleanPhone) {
     res.status(400).json({ error: 'Enter your number.' });

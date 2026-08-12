@@ -2,15 +2,15 @@
 // (PIN) is now checked here, server-side, instead of in the browser — so the
 // stored PIN hash is never sent to any client at all, closing a gap where it
 // would previously have been readable by anyone with open database access.
-const crypto = require('crypto');
-const { adminDb, withJsonHandler } = require('../_firebaseAdmin');
-const { generateRegistrationOptions } = require('@simplewebauthn/server');
+import crypto from 'crypto';
+import { adminDb, withJsonHandler } from '../_firebaseAdmin.js';
+import { generateRegistrationOptions } from '@simplewebauthn/server';
 
 function sha256Hex(text) {
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const { doctorId, accountKey, pin } = body;
   if (!doctorId || !accountKey || !pin) {
     res.status(400).json({ error: 'Missing fields.' });

@@ -6,9 +6,14 @@
 // access to Firebase regardless of the database security rules, so they can
 // safely do things like verify a PIN or a fingerprint assertion and then
 // mint a properly-scoped identity token for that specific doctor.
-const { cert, initializeApp, getApps } = require('firebase-admin/app');
-const { getAuth } = require('firebase-admin/auth');
-const { getDatabase } = require('firebase-admin/database');
+//
+// Written as an ES module (see "type":"module" in package.json) because
+// firebase-admin's auth module pulls in an ESM-only dependency (jose) —
+// loading this via plain CommonJS require() crashes on Vercel's Node
+// runtime with "ERR_REQUIRE_ESM". Using native import/export avoids that.
+import { cert, initializeApp, getApps } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { getDatabase } from 'firebase-admin/database';
 
 function getAdminApp() {
   if (getApps().length) return getApps()[0];
@@ -34,16 +39,16 @@ function getAdminApp() {
   });
 }
 
-function adminAuth() {
+export function adminAuth() {
   return getAuth(getAdminApp());
 }
-function adminDb() {
+export function adminDb() {
   return getDatabase(getAdminApp());
 }
 
 // Small helper so every function handles method/body parsing and error
 // responses the same consistent way.
-function withJsonHandler(fn) {
+export function withJsonHandler(fn) {
   return async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (req.method !== 'POST') {
@@ -62,5 +67,3 @@ function withJsonHandler(fn) {
     }
   };
 }
-
-module.exports = { adminAuth, adminDb, withJsonHandler };

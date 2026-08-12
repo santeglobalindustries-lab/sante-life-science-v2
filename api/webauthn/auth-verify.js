@@ -3,12 +3,12 @@
 // the public key stored at registration time, not just comparing an ID
 // string. Only once that check passes does the caller get a real,
 // doctor-scoped identity token.
-const { adminDb, adminAuth, withJsonHandler } = require('../_firebaseAdmin');
-const { verifyAuthenticationResponse } = require('@simplewebauthn/server');
+import { adminDb, adminAuth, withJsonHandler } from '../_firebaseAdmin.js';
+import { verifyAuthenticationResponse } from '@simplewebauthn/server';
 
 const CHALLENGE_MAX_AGE_MS = 5 * 60 * 1000;
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const { doctorId, accountKey, response } = body;
   if (!doctorId || !accountKey || !response) {
     res.status(400).json({ error: 'Missing fields.' });

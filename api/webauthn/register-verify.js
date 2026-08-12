@@ -3,12 +3,12 @@
 // moment ago, and — critically — stores the credential's PUBLIC key (not
 // just an ID string) so future logins can be verified with a real
 // signature check, not just "does this ID match".
-const { adminDb, adminAuth, withJsonHandler } = require('../_firebaseAdmin');
-const { verifyRegistrationResponse } = require('@simplewebauthn/server');
+import { adminDb, adminAuth, withJsonHandler } from '../_firebaseAdmin.js';
+import { verifyRegistrationResponse } from '@simplewebauthn/server';
 
 const CHALLENGE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes to complete the biometric prompt
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const { doctorId, accountKey, response } = body;
   if (!doctorId || !accountKey || !response) {
     res.status(400).json({ error: 'Missing fields.' });

@@ -3,9 +3,9 @@
 // only to tokens with that claim — the passcode itself never reaches the
 // browser's source code anymore (previously it was a plain constant sitting
 // in index.html, visible to anyone who opened dev tools).
-const { adminAuth, withJsonHandler } = require('./_firebaseAdmin');
+import { adminAuth, withJsonHandler } from './_firebaseAdmin.js';
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const { passcode } = body;
   const expected = process.env.ADMIN_PASSCODE;
   if (!expected) {

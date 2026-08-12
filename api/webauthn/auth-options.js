@@ -2,10 +2,10 @@
 // app, and when someone picks "Unlock" after entering a phone number that
 // turned out to already be bound. Either way: no Firebase identity exists
 // yet at this point, so this has to be a server call.
-const { adminDb, withJsonHandler } = require('../_firebaseAdmin');
-const { generateAuthenticationOptions } = require('@simplewebauthn/server');
+import { adminDb, withJsonHandler } from '../_firebaseAdmin.js';
+import { generateAuthenticationOptions } from '@simplewebauthn/server';
 
-module.exports = withJsonHandler(async (body, res) => {
+export default withJsonHandler(async (body, res) => {
   const { doctorId, accountKey } = body;
   if (!doctorId || !accountKey) {
     res.status(400).json({ error: 'Missing fields.' });
