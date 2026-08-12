@@ -1,0 +1,10 @@
+{
+  "name": "sante-life-science-kit-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Server-side API routes (Vercel serverless functions) for Sante Life Science Kit Desk. The app itself is the static index.html at the repo root — this package.json exists only so Vercel installs the dependencies these /api functions need.",
+  "dependencies": {
+    "firebase-admin": "^14.2.0",
+    "@simplewebauthn/server": "^13.3.2"
+  }
+}
