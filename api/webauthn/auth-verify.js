@@ -3,7 +3,7 @@
 // the public key stored at registration time, not just comparing an ID
 // string. Only once that check passes does the caller get a real,
 // doctor-scoped identity token.
-import { adminDb, adminAuth, withJsonHandler } from '../_firebaseAdmin.js';
+import { adminDb, mintCustomToken, withJsonHandler } from '../_firebaseAdmin.js';
 import { verifyAuthenticationResponse } from '@simplewebauthn/server';
 
 const CHALLENGE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -64,7 +64,7 @@ export default withJsonHandler(async (body, res) => {
   await accRef.child('credential/counter').set(verification.authenticationInfo.newCounter);
   await challengeRef.remove();
 
-  const token = await adminAuth().createCustomToken(`${doctorId}_${accountKey}`, {
+  const token = mintCustomToken(`${doctorId}_${accountKey}`, {
     role: 'doctor',
     doctorId,
     accountKey,

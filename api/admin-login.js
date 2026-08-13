@@ -3,7 +3,7 @@
 // only to tokens with that claim — the passcode itself never reaches the
 // browser's source code anymore (previously it was a plain constant sitting
 // in index.html, visible to anyone who opened dev tools).
-import { adminAuth, withJsonHandler } from './_firebaseAdmin.js';
+import { mintCustomToken, withJsonHandler } from './_firebaseAdmin.js';
 
 export default withJsonHandler(async (body, res) => {
   const { passcode } = body;
@@ -16,6 +16,6 @@ export default withJsonHandler(async (body, res) => {
     res.status(401).json({ error: 'Incorrect passcode.' });
     return;
   }
-  const token = await adminAuth().createCustomToken('admin-user', { role: 'admin' });
+  const token = mintCustomToken('admin-user', { role: 'admin' });
   res.status(200).json({ token });
 });

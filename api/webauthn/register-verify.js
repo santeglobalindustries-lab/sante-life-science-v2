@@ -3,7 +3,7 @@
 // moment ago, and — critically — stores the credential's PUBLIC key (not
 // just an ID string) so future logins can be verified with a real
 // signature check, not just "does this ID match".
-import { adminDb, adminAuth, withJsonHandler } from '../_firebaseAdmin.js';
+import { adminDb, mintCustomToken, withJsonHandler } from '../_firebaseAdmin.js';
 import { verifyRegistrationResponse } from '@simplewebauthn/server';
 
 const CHALLENGE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes to complete the biometric prompt
@@ -61,7 +61,7 @@ export default withJsonHandler(async (body, res) => {
 
   const accSnap = await db.ref(`doctors/${doctorId}/accounts/${accountKey}`).once('value');
   const acc = accSnap.val();
-  const token = await adminAuth().createCustomToken(`${doctorId}_${accountKey}`, {
+  const token = mintCustomToken(`${doctorId}_${accountKey}`, {
     role: 'doctor',
     doctorId,
     accountKey,
