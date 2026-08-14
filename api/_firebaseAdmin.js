@@ -21,15 +21,30 @@ import crypto from 'crypto';
 function readCredentials() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  // Vercel env vars store literal text, so a real private key's newlines
-  // arrive as the two characters "\" and "n" rather than an actual newline.
-  // This converts them back before handing the key to the crypto library.
-  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
   const databaseURL = process.env.FIREBASE_DATABASE_URL;
+  const rawKey = process.env.FIREBASE_PRIVATE_KEY || '';
+  // Environment variable UIs are surprisingly easy to paste a key into
+  // slightly wrong — a stray leading/trailing space, the whole value
+  // wrapped in quotes, or literal "\n" text instead of real line breaks —
+  // and every one of those makes Node's crypto library reject the key with
+  // an opaque "DECODER routines::unsupported" error. This normalizes all
+  // of those cases rather than requiring the paste to be pixel-perfect.
+  const privateKey = rawKey
+    .trim()
+    .replace(/^"(.*)"$/s, '$1')   // strip a single pair of surrounding quotes, if present
+    .replace(/\\n/g, '\n')        // literal backslash-n -> real newline
+    .replace(/\r\n/g, '\n')       // CRLF -> LF
+    .trim();
   if (!projectId || !clientEmail || !privateKey || !databaseURL) {
     throw new Error(
       'Missing Firebase Admin environment variables. Required: FIREBASE_PROJECT_ID, ' +
       'FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY, FIREBASE_DATABASE_URL.'
+    );
+  }
+  if (!privateKey.startsWith('-----BEGIN PRIVATE KEY-----')) {
+    throw new Error(
+      'FIREBASE_PRIVATE_KEY does not look like a valid PEM private key (should start with ' +
+      '"-----BEGIN PRIVATE KEY-----"). Re-check the value pasted into Vercel.'
     );
   }
   return { projectId, clientEmail, privateKey, databaseURL };
