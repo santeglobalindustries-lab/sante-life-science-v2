@@ -1,49 +1,6 @@
 {
   "rules": {
-    ".read": false,
-    ".write": false,
-
-    "doctors": {
-      ".read": "auth.token.role === 'admin'",
-      ".write": "auth.token.role === 'admin'",
-      "$doctorId": {
-        ".read": "auth.token.role === 'admin' || auth.token.doctorId === $doctorId"
-      }
-    },
-
-    "products": {
-      ".read": "auth != null",
-      ".write": "auth.token.role === 'admin'"
-    },
-
-    "kits": {
-      ".read": "auth != null",
-      ".write": "auth.token.role === 'admin'"
-    },
-
-    "orders": {
-      ".read": "auth.token.role === 'admin' || (query.orderByChild === 'doctorId' && query.equalTo === auth.token.doctorId)",
-      ".indexOn": ["doctorId"],
-      "$orderId": {
-        ".read": "auth.token.role === 'admin' || (data.exists() && auth.token.doctorId === data.child('doctorId').val())",
-        ".write": "auth.token.role === 'admin' || (auth.token.doctorId != null && ( (!data.exists() && newData.exists() && newData.child('doctorId').val() === auth.token.doctorId) || (data.exists() && !newData.exists() && data.child('doctorId').val() === auth.token.doctorId && data.child('status').val() !== 'confirmed') || (data.exists() && newData.exists() && data.child('doctorId').val() === auth.token.doctorId && newData.child('doctorId').val() === auth.token.doctorId && data.child('status').val() !== 'confirmed') ))"
-      }
-    },
-
-    "payouts": {
-      ".read": "auth.token.role === 'admin' || (query.orderByChild === 'doctorId' && query.equalTo === auth.token.doctorId)",
-      ".indexOn": ["doctorId"],
-      ".write": "auth.token.role === 'admin'"
-    },
-
-    "productBackups": {
-      ".read": "auth.token.role === 'admin'",
-      ".write": "auth.token.role === 'admin'"
-    },
-
-    "webauthnChallenges": {
-      ".read": false,
-      ".write": false
-    }
+    ".read": "auth != null",
+    ".write": "auth != null"
   }
 }
