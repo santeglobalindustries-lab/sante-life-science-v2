@@ -329,7 +329,7 @@
           <span class="view-desc" id="product-count"></span>
         </div>
         <div class="table-wrap">
-          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th>Stock</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
+          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
       </div>
 
@@ -837,18 +837,70 @@ function orderItems(o){ return Array.isArray(o.items) ? o.items : (o.productCode
 function kitItems(k){ return Array.isArray(k.items) ? k.items : (k.productCodes||[]).map(c=>({code:c, qty:1})); }
 const itemsTotal = items => Math.round(items.reduce((s,it)=>s+(findProduct(it.code)?.mrp||0)*(it.qty||1),0));
 const kitTotal = itemsTotal; // kept as an alias since some call-sites still say kitTotal
+
+/* ---- Inventory / stock tracking ----
+   A product only has stock tracking "on" once Admin explicitly sets a
+   number on it — a product with no stock field at all behaves exactly as
+   it always did (unlimited, no warnings), so importing/adding thousands of
+   products doesn't suddenly block ordering until someone manually sets a
+   count on every single one. The old boolean "out of stock" toggle is
+   folded in as a legacy fallback: outOfStock:true with no explicit stock
+   number set behaves like stock 0 until Admin sets a real quantity. */
+function stockTrackingEnabled(p){ return p && p.stock !== undefined && p.stock !== null; }
+function effectiveStock(p){
+  if(!p) return Infinity;
+  if(stockTrackingEnabled(p)) return p.stock;
+  return p.outOfStock ? 0 : Infinity;
+}
+// Atomically reserves up to `qty` units of a product's stock, returning how
+// much was actually reserved and how much couldn't be (the shortfall). Uses
+// a Firebase transaction so two doctors ordering the same last few screws
+// at the same moment can never both succeed and oversell — the database
+// itself serializes the two attempts rather than trusting a read-then-write
+// from the browser, which would have a real race condition.
+async function reserveStock(code, qty){
+  const key = sanitizeKey(code);
+  const ref = db.ref(`products/${key}/stock`);
+  let reservedQty = qty, trackingWasEnabled = false;
+  await ref.transaction(current => {
+    if(current === null || current === undefined){ trackingWasEnabled = false; reservedQty = qty; return current; }
+    trackingWasEnabled = true;
+    const canReserve = Math.max(0, Math.min(current, qty));
+    reservedQty = canReserve;
+    return current - canReserve;
+  });
+  return { reservedQty, unavailableQty: trackingWasEnabled ? (qty - reservedQty) : 0 };
+}
+// The inverse — used when an order is edited (quantity reduced) or deleted,
+// so stock that was reserved but is no longer needed goes back into the pool
+// for the next doctor to order.
+async function releaseStock(code, qty){
+  if(!qty) return;
+  const key = sanitizeKey(code);
+  const ref = db.ref(`products/${key}/stock`);
+  await ref.transaction(current => {
+    if(current === null || current === undefined) return current; // tracking not enabled for this product
+    return current + qty;
+  });
+}
+function billableQty(it){ return Math.max(0, (it.qty||1) - (it.unavailableQty || (it.unavailable ? (it.qty||1) : 0))); }
 // Rounded to the nearest rupee: every screen in this app only ever displays
 // whole rupees, so any fractional MRP snuck in via a CSV import or a typo
 // would otherwise sit invisibly in every total and eventually surface as a
 // confusing ₹1 mismatch on a balance — exactly what happened with Dr Pooja's
 // order. Rounding here means the number used in every calculation always
 // matches what's shown on screen.
-// If Admin has marked an item "not available" on this order, it's excluded
-// from billing entirely — a doctor shouldn't be charged (or earn incentive)
-// on something that isn't actually being fulfilled. It stays visible in the
-// item table (crossed out) for a clear record, just not counted in totals.
-function orderBillableItems(o){ return orderItems(o).filter(it=>!it.unavailable); }
-function orderMrpTotal(o){ return itemsTotal(orderBillableItems(o)); }
+// If part (or all) of an item's quantity is flagged unavailable — either
+// because Admin marked it so, or because stock ran out automatically at
+// order time — that portion is excluded from billing entirely. A doctor
+// shouldn't be charged (or earn incentive) on units that aren't actually
+// being fulfilled.
+function orderMrpTotal(o){
+  return Math.round(orderItems(o).reduce((s,it)=>{
+    const p = findProduct(it.code);
+    return s + (p?.mrp||0) * billableQty(it);
+  }, 0));
+}
 // Discount and incentive are independent rates — discount reduces what the
 // doctor is billed; incentive is a separate commission paid out to them/
 // their staff. Each order uses the doctor's default discount rate UNLESS
@@ -911,38 +963,30 @@ function renderProductTable(){
         <td><input type="text" id="edit-p-name-${p.id}" value="${escapeAttr(p.name)}" style="width:100%;"></td>
         <td><input type="text" id="edit-p-category-${p.id}" value="${escapeAttr(p.category)}" style="width:100%;"></td>
         <td style="text-align:right;"><input type="number" id="edit-p-mrp-${p.id}" value="${p.mrp}" style="width:100px; text-align:right;"></td>
-        <td></td>
+        <td style="text-align:center;"><input type="number" min="0" id="edit-p-stock-${p.id}" value="${stockTrackingEnabled(p) ? p.stock : ''}" placeholder="untracked" style="width:80px; text-align:center;"></td>
+        <td><input type="date" id="edit-p-restock-${p.id}" value="${p.restockDate||''}" style="width:140px;"></td>
         <td style="white-space:nowrap;">
           <button class="btn btn-sm" onclick="saveProduct('${p.id}')">Save</button>
           <button class="btn btn-outline btn-sm" onclick="cancelEditProduct()">Cancel</button>
         </td>
       </tr>`;
     }
+    const stock = effectiveStock(p);
+    const stockDisplay = !stockTrackingEnabled(p) && !p.outOfStock ? `<span style="color:var(--cream-faint);">untracked</span>` : `<span class="num" style="color:${stock<=0?'var(--rust)':(stock<10?'var(--amber-bright)':'var(--sage)')}">${isFinite(stock)?stock:'—'}</span>`;
     return `<tr>
       <td class="num">${i+1}</td>
       <td class="num">${p.code}</td>
       <td>${p.name}</td>
       <td>${p.category}</td>
       <td class="num" style="text-align:right;">${money(p.mrp)}</td>
+      <td style="text-align:center;">${stockDisplay}</td>
+      <td>${p.restockDate ? escapeAttr(p.restockDate) : '<span style="color:var(--cream-faint);">—</span>'}</td>
       <td style="white-space:nowrap;">
-        <span class="badge ${p.outOfStock ? 'unbound' : 'bound'}">${p.outOfStock ? 'Out of stock' : 'In stock'}</span>
-      </td>
-      <td style="white-space:nowrap;">
-        <button class="btn btn-outline btn-sm" onclick="toggleProductStock('${p.id}')">${p.outOfStock ? 'Mark in stock' : 'Mark out of stock'}</button>
         <button class="btn btn-outline btn-sm" onclick="startEditProduct('${p.id}')">Edit</button>
         <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="7" class="empty">No matches.</td></tr>`;
-}
-async function toggleProductStock(id){
-  const p = productsArr().find(x=>x.id===id);
-  if(!p) return;
-  try{
-    await db.ref(`products/${id}/outOfStock`).set(!p.outOfStock);
-  }catch(err){
-    alert('Could not update stock status: ' + err.message);
-  }
+  }).join('') || `<tr><td colspan="8" class="empty">No matches.</td></tr>`;
 }
 function startEditProduct(id){ editingProductId = id; renderProductTable(); }
 function cancelEditProduct(){ editingProductId = null; renderProductTable(); }
@@ -951,9 +995,19 @@ async function saveProduct(id){
   const name = document.getElementById(`edit-p-name-${id}`).value.trim();
   const category = document.getElementById(`edit-p-category-${id}`).value.trim();
   const mrp = Math.round(parseFloat(document.getElementById(`edit-p-mrp-${id}`).value) || 0);
+  const stockRaw = document.getElementById(`edit-p-stock-${id}`).value;
+  const restockDate = document.getElementById(`edit-p-restock-${id}`).value || null;
   if(!code || !name){ alert('Code and name are required.'); return; }
+  const payload = { code, name, category, mrp };
+  // Leaving the stock field blank means "untracked" (unlimited, like
+  // before) — an explicit number (including 0) turns tracking on for this
+  // product. This is a full .set() (replacing the whole product), so both
+  // fields must be explicitly included one way or the other, or they'd be
+  // silently wiped on every edit.
+  if(stockRaw !== ''){ payload.stock = Math.max(0, Math.round(parseFloat(stockRaw)) || 0); }
+  if(restockDate){ payload.restockDate = restockDate; }
   try{
-    await db.ref(`products/${id}`).set({ code, name, category, mrp });
+    await db.ref(`products/${id}`).set(payload);
     editingProductId = null;
   }catch(err){
     alert('Could not save changes: ' + err.message);
@@ -1042,10 +1096,20 @@ function parseCsvRows(raw){
     if(!name){ skip('missing name'); return; }
     if(isNaN(mrp)){ skip(`price "${mrpStr}" isn't a number`); return; }
     const isNew = !existingCodes.has(code);
+    const old = isNew ? null : findProduct(code);
     if(isNew){ added++; if(addedSamples.length<5) addedSamples.push({code,name,mrp}); }
-    else { updated++; if(updatedSamples.length<5){ const old=findProduct(code); updatedSamples.push({code,name,oldMrp:old?.mrp, mrp}); } }
+    else { updated++; if(updatedSamples.length<5){ updatedSamples.push({code,name,oldMrp:old?.mrp, mrp}); } }
     existingCodes.add(code);
-    updates[sanitizeKey(code)] = { code, name, category: category||'', mrp };
+    // A routine price/name update must NOT silently wipe out stock tracking
+    // or a restock date that was set on this product — carry those forward
+    // from the existing record unless this is a brand-new product.
+    const preserved = {};
+    if(old){
+      if(stockTrackingEnabled(old)) preserved.stock = old.stock;
+      if(old.restockDate) preserved.restockDate = old.restockDate;
+      if(old.outOfStock) preserved.outOfStock = old.outOfStock;
+    }
+    updates[sanitizeKey(code)] = { code, name, category: category||'', mrp, ...preserved };
   });
   return { updates, added, updated, skipped, skippedRows, addedSamples, updatedSamples, lineCount: lines.length };
 }
@@ -1384,26 +1448,27 @@ function renderAdminOrders(){
     const discPct = effectiveDiscountPct(o);
     const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
     const items = orderItems(o);
-    const hasUnavailable = items.some(it=>it.unavailable);
+    const hasUnavailable = items.some(it=>(it.unavailableQty||0) > 0);
     const locked = o.status === 'confirmed';
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
-    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th><th>Availability</th></tr></thead><tbody>
+    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:center;">Unavailable</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
       ${items.map((it,i)=>{
         const p = findProduct(it.code);
         const qty = it.qty||1;
-        const strike = it.unavailable ? 'text-decoration:line-through; color:var(--cream-faint);' : '';
-        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td><td></td></tr>`;
-        return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${it.unavailable ? '—' : money(p.mrp*qty)}</td><td style="white-space:nowrap;">
-          ${it.unavailable ? `<span style="color:var(--rust); font-size:11px;">NOT AVAILABLE</span>` : ''}
-          ${!locked ? `<button class="btn btn-outline btn-sm" onclick="toggleItemAvailability('${o.id}',${i})">${it.unavailable ? 'Mark available' : 'Mark unavailable'}</button>` : ''}
-        </td></tr>`;
+        const unavailQty = it.unavailableQty || 0;
+        const billable = billableQty(it);
+        const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
+        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="5" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td></tr>`;
+        return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.autoFlagged ? ` <span style="color:var(--amber-bright); font-size:11px;">(auto-flagged: stock ran short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td style="text-align:center; white-space:nowrap;">
+          ${!locked ? `<input type="number" min="0" max="${qty}" value="${unavailQty}" style="width:56px; text-align:center;" onchange="setItemUnavailableQty('${o.id}',${i},this.value)">` : `<span class="num">${unavailQty}</span>`}
+        </td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
       }).join('')}
-      <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable items)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td><td></td></tr>
+      <tr><td colspan="7" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
-    <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total</div>`;
+    <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total${hasUnavailable ? ` · ${items.reduce((s,it)=>s+(it.unavailableQty||0),0)} units unavailable` : ''}</div>`;
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
-      ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable item(s) and wants to proceed — ready for final confirmation.</div>` : ''}
+      ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable unit(s) and wants to proceed — ready for final confirmation.</div>` : ''}
       ${itemsTable}
       <div class="row" style="margin-top:12px;">
         <div class="stat-card" style="padding:12px;"><div class="label">MRP</div><div class="value" style="font-size:16px;">${money(mrp)}</div></div>
@@ -1426,17 +1491,26 @@ function renderAdminOrders(){
       <div class="whatsapp-box">${msg}</div>
       <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         ${!locked ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
-        ${hasUnavailable && !locked ? `<button class="btn btn-outline btn-sm" onclick="notifyDoctorUnavailable('${o.id}')" style="color:var(--amber-bright);">Notify doctor of unavailable item(s)</button>` : ''}
+        ${hasUnavailable && !locked ? `<button class="btn btn-outline btn-sm" onclick="notifyDoctorUnavailable('${o.id}')" style="color:var(--amber-bright);">Notify doctor of unavailable unit(s)</button>` : ''}
         ${waLink ? `<a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">No orders yet.</div>`;
 }
-async function toggleItemAvailability(orderId, idx){
+// Admin can adjust how many units of a line item are unavailable — this is
+// the same field the system sets automatically when stock runs short at
+// order time, so Admin can override/correct it either way. NOTE: this only
+// affects billing (what the doctor is charged); it does not itself move any
+// stock — the actual reservation already happened (or didn't) at the moment
+// the order was placed or last edited.
+async function setItemUnavailableQty(orderId, idx, value){
   const o = ordersArr().find(x=>x.id===orderId);
   if(!o) return;
   const items = orderItems(o).map(it=>({...it}));
   if(!items[idx]) return;
-  items[idx].unavailable = !items[idx].unavailable;
+  const qty = items[idx].qty || 1;
+  const n = Math.max(0, Math.min(qty, Math.round(parseFloat(value)) || 0));
+  if(n > 0) items[idx].unavailableQty = n; else delete items[idx].unavailableQty;
+  delete items[idx].unavailable; // migrate away from the old boolean field
   try{
     await db.ref(`orders/${orderId}/items`).set(items);
   }catch(err){
@@ -1446,8 +1520,8 @@ async function toggleItemAvailability(orderId, idx){
 async function notifyDoctorUnavailable(orderId){
   const o = ordersArr().find(x=>x.id===orderId);
   if(!o) return;
-  const unavailableItems = orderItems(o).filter(it=>it.unavailable);
-  if(!unavailableItems.length){ alert('No items are currently marked unavailable on this order.'); return; }
+  const shortItems = orderItems(o).filter(it=>(it.unavailableQty||0) > 0);
+  if(!shortItems.length){ alert('No items are currently marked unavailable on this order.'); return; }
   try{
     await db.ref(`orders/${orderId}`).update({ status:'needs_review', doctorAcknowledgedUnavailable:false });
   }catch(err){
@@ -1455,8 +1529,13 @@ async function notifyDoctorUnavailable(orderId){
     return;
   }
   const doc = findDocSafe(o.doctorId);
-  const names = unavailableItems.map(it=>{ const p=findProduct(it.code); return p ? p.name : it.code; }).join(', ');
-  const msg = `Hello ${doc.name}, your order has been reviewed. Unfortunately the following item(s) are not available right now: ${names}.\nThe rest of your order can still go ahead. Please open the app to let us know if you'd like to proceed without these — we'll finalize the order once you confirm.\n— Sante Life Science`;
+  const lines = shortItems.map(it=>{
+    const p = findProduct(it.code);
+    const name = p ? p.name : it.code;
+    const eta = p && p.restockDate ? `expected back by ${p.restockDate}` : 'no restock date set yet';
+    return `${name}: ${it.unavailableQty} of ${it.qty} short (${eta})`;
+  }).join('\n');
+  const msg = `Hello ${doc.name}, your order has been reviewed. Some unit(s) are short on stock right now:\n${lines}\nThe rest of your order can still go ahead. Please open the app to let us know if you'd like to proceed without these — we'll finalize the order once you confirm.\n— Sante Life Science`;
   const billPhone = doc.accounts.doctor.phone;
   if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   else alert('Doctor notified in-app. (No phone on file, so no WhatsApp message was sent.)');
@@ -1481,7 +1560,7 @@ async function resetOrderDiscount(orderId){
 async function confirmOrder(id){
   const o = ordersArr().find(x=>x.id===id);
   if(o && o.status === 'needs_review' && !o.doctorAcknowledgedUnavailable){
-    if(!confirm("The doctor hasn't acknowledged the unavailable item(s) on this order yet. Confirm anyway?")) return;
+    if(!confirm("The doctor hasn't acknowledged the unavailable unit(s) on this order yet. Confirm anyway?")) return;
   }
   await db.ref('orders/'+id+'/status').set('confirmed');
 }
@@ -1634,14 +1713,16 @@ function orderCardHtml(o){
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
   const mrp = orderMrpTotal(o);
   const items = orderItems(o);
-  const unavailableItems = items.filter(it=>it.unavailable);
+  const shortItems = items.filter(it=>(it.unavailableQty||0) > 0);
   const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
     ${items.map((it,i)=>{
       const p = findProduct(it.code);
       const qty = it.qty||1;
-      const strike = it.unavailable ? 'text-decoration:line-through; color:var(--cream-faint);' : '';
+      const unavailQty = it.unavailableQty || 0;
+      const billable = billableQty(it);
+      const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
       if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
-      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.unavailable ? ` <span style="color:var(--rust); font-size:11px;">(not available)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${it.unavailable ? '—' : money(p.mrp*qty)}</td></tr>`;
+      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${unavailQty>0 ? ` <span style="color:var(--rust); font-size:11px;">(${unavailQty} of ${qty} short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
     }).join('')}
     <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
   </tbody></table></div>`;
@@ -1649,7 +1730,10 @@ function orderCardHtml(o){
     : needsReview ? `<span class="badge partial">Action needed</span>`
     : `<span class="badge pending">Pending confirmation</span>`;
   const unavailableBanner = needsReview ? `<div style="border:1px solid var(--rust); padding:10px; margin:10px 0; font-size:13px;">
-      <div style="color:var(--rust); margin-bottom:6px;">Some item(s) in this order aren't available right now: <b>${unavailableItems.map(it=>{const p=findProduct(it.code); return p?p.name:it.code;}).join(', ')}</b></div>
+      <div style="color:var(--rust); margin-bottom:6px;">Some units in this order are short on stock:</div>
+      <ul style="margin:0 0 8px; padding-left:18px; color:var(--cream-dim);">
+        ${shortItems.map(it=>{ const p=findProduct(it.code); const name=p?p.name:it.code; const eta=p&&p.restockDate?`expected back by ${p.restockDate}`:'restock date not set yet'; return `<li>${escapeAttr(name)} — ${it.unavailableQty} of ${it.qty} short (${escapeAttr(eta)})</li>`; }).join('')}
+      </ul>
       <div style="color:var(--cream-dim); margin-bottom:8px;">You can proceed without them, edit the order yourself, or cancel it entirely.</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn btn-sm" onclick="acknowledgeUnavailable('${o.id}')">Proceed without these</button>
@@ -1677,7 +1761,7 @@ function orderCardHtml(o){
     </div>`;
 }
 async function acknowledgeUnavailable(orderId){
-  if(!confirm("Proceed with this order without the unavailable item(s)? It'll go back to the Sante team for final confirmation.")) return;
+  if(!confirm("Proceed with this order without the unavailable unit(s)? It'll go back to the Sante team for final confirmation.")) return;
   try{
     await db.ref('orders/'+orderId).update({ status:'pending', doctorAcknowledgedUnavailable:true });
   }catch(err){
@@ -1708,8 +1792,8 @@ function applyKitTemplate(){
   const kit = kitsArr().find(k=>k.id===kitId);
   if(!kit){ orderDraftItems = []; renderOrderPills(); return; }
   const rawItems = kitItems(kit);
-  const availableItems = rawItems.filter(it => !findProduct(it.code)?.outOfStock);
-  const skipped = rawItems.filter(it => findProduct(it.code)?.outOfStock);
+  const availableItems = rawItems.filter(it => effectiveStock(findProduct(it.code)) > 0);
+  const skipped = rawItems.filter(it => effectiveStock(findProduct(it.code)) <= 0);
   orderDraftItems = availableItems.map(it=>({...it}));
   renderOrderPills();
   if(skipped.length){
@@ -1722,11 +1806,15 @@ function renderOrderProductSearch(){
   const box = document.getElementById('order-product-results');
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
   // Out-of-stock products don't show up here at all — this is what actually
-  // keeps a doctor from ordering something Admin has marked unavailable
-  // catalog-wide, rather than just relying on them not noticing.
-  const matches = productsArr().filter(p=>!p.outOfStock && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
+  // keeps a doctor from ordering something that's fully unavailable,
+  // rather than just relying on them not noticing.
+  const matches = productsArr().filter(p=>effectiveStock(p) > 0 && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
   box.style.display = matches.length ? 'block':'none';
-  box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
+  box.innerHTML = matches.map(p=>{
+    const stock = effectiveStock(p);
+    const stockNote = isFinite(stock) ? ` <span style="color:var(--cream-faint); font-size:11px;">(${stock} in stock)</span>` : '';
+    return `<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${escapeAttr(p.name)}${stockNote} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`;
+  }).join('');
 }
 // Adding a product already in the order just bumps its quantity by one,
 // instead of being a no-op — this is what actually lets a doctor order
@@ -1760,8 +1848,13 @@ function renderOrderPills(){
     const p=findProduct(it.code);
     if(!p) return '';
     const qty = it.qty||1;
+    const stock = effectiveStock(p);
+    const short = isFinite(stock) && qty > stock;
+    const stockWarning = short
+      ? ` <span style="color:var(--rust); font-size:11px;">(only ${Math.max(stock,0)} in stock — rest will be flagged for the Sante team${p.restockDate ? `, expected ${p.restockDate}` : ''})</span>`
+      : '';
     return `<span class="pill">
-      <span>${escapeAttr(p.name)}${p.outOfStock ? ` <span style="color:var(--rust); font-size:11px;">(now out of stock)</span>` : ''}</span>
+      <span>${escapeAttr(p.name)}${stockWarning}</span>
       <span style="display:inline-flex; align-items:center; gap:4px;">
         <button type="button" onclick="decrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">−</button>
         <input type="number" min="1" value="${qty}" onchange="setOrderQty('${it.code}', this.value)" style="width:40px; text-align:center; padding:2px; font-size:12px;">
@@ -1773,24 +1866,84 @@ function renderOrderPills(){
   }).join('');
   document.getElementById('order-mrp-preview').textContent = money(itemsTotal(orderDraftItems));
 }
+function restockEtaText(p){
+  if(p && p.restockDate) return `expected back by ${p.restockDate}`;
+  const eta = new Date(); eta.setDate(eta.getDate()+3);
+  return `expected in about 3 days (around ${eta.toISOString().slice(0,10)})`;
+}
+// Preview of any shortfalls BEFORE actually reserving anything, shown as a
+// confirm() before placing/saving the order. When editing an existing order,
+// this accounts for the stock that order itself already holds — otherwise
+// an unchanged quantity could wrongly look "short" against its own reservation.
+function buildShortfallWarning(existingOrder){
+  const lines = [];
+  const alreadyReservedByThisOrder = {};
+  if(existingOrder){
+    orderItems(existingOrder).forEach(it=>{
+      const reserved = (it.qty||1) - (it.unavailableQty||0);
+      alreadyReservedByThisOrder[it.code] = (alreadyReservedByThisOrder[it.code]||0) + reserved;
+    });
+  }
+  for(const it of orderDraftItems){
+    const p = findProduct(it.code);
+    if(!p) continue;
+    const stock = effectiveStock(p);
+    if(!isFinite(stock)) continue;
+    const effectiveAvailable = stock + (alreadyReservedByThisOrder[it.code]||0);
+    const qty = it.qty||1;
+    if(qty > effectiveAvailable){
+      lines.push(`${p.name}: only ${Math.max(effectiveAvailable,0)} of ${qty} in stock (${restockEtaText(p)})`);
+    }
+  }
+  return lines;
+}
 async function placeOrder(){
   if(orderDraftItems.length===0){ alert('Add at least one item to the order.'); return; }
   const date = document.getElementById('order-date').value;
   const time = document.getElementById('order-time').value;
   if(!date || !time){ alert('Set a date and time.'); return; }
-  const items = orderDraftItems.map(it=>({code:it.code, qty:it.qty||1}));
+
+  let existingOrder = null;
   if(editingOrderId){
-    const o = myOrders().find(x=>x.id===editingOrderId);
-    if(!o || o.status === 'confirmed'){
+    existingOrder = myOrders().find(x=>x.id===editingOrderId);
+    if(!existingOrder || existingOrder.status === 'confirmed'){
       alert('This order can no longer be edited — it has already been confirmed.');
       editingOrderId = null;
       showView('doc-orders');
       return;
     }
-    // Editing implicitly resolves an "action needed" (unavailable item) state —
-    // it goes back to a normal pending order for Admin's final review.
+  }
+
+  const shortfallLines = buildShortfallWarning(existingOrder);
+  if(shortfallLines.length){
+    const proceed = confirm(`Heads up — some items don't have full stock right now:\n\n${shortfallLines.join('\n')}\n\nThe rest of your order can still go ahead — the short amount will be flagged for the Sante team to sort out. Continue?`);
+    if(!proceed) return;
+  }
+
+  // If editing, release whatever this order had reserved before FIRST, so
+  // the fresh reservation below checks against the true available pool —
+  // otherwise an unchanged quantity could look "short" against itself.
+  if(existingOrder){
+    for(const oldIt of orderItems(existingOrder)){
+      const reservedBefore = (oldIt.qty||1) - (oldIt.unavailableQty||0);
+      await releaseStock(oldIt.code, reservedBefore);
+    }
+  }
+
+  // Reserve stock atomically for each item — safe even if two doctors submit
+  // at the same moment (see reserveStock()'s use of a Firebase transaction).
+  // Building the final item list from the reservation result (not from the
+  // screen) means unavailableQty always reflects what's truly left.
+  const items = [];
+  for(const draftItem of orderDraftItems){
+    const qty = draftItem.qty || 1;
+    const { unavailableQty } = await reserveStock(draftItem.code, qty);
+    items.push({ code: draftItem.code, qty, ...(unavailableQty>0 ? {unavailableQty, autoFlagged:true} : {}) });
+  }
+
+  if(existingOrder){
     const updatePayload = { items, productCodes:null, date, time };
-    if(o.status === 'needs_review') Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
+    if(existingOrder.status === 'needs_review') Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
     try{
       await db.ref('orders/'+editingOrderId).update(updatePayload);
       alert('Order updated.');
@@ -1828,6 +1981,11 @@ async function deleteMyOrder(id){
   if(o.status === 'confirmed'){ alert('This order has already been confirmed and can no longer be deleted.'); return; }
   if(!confirm('Delete this order? This cannot be undone.')) return;
   try{
+    // Give back whatever stock this order was holding before removing it.
+    for(const it of orderItems(o)){
+      const reserved = (it.qty||1) - (it.unavailableQty||0);
+      await releaseStock(it.code, reserved);
+    }
     await db.ref('orders/'+id).remove();
   }catch(err){
     alert('Could not delete: ' + err.message);
