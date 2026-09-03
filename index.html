@@ -426,6 +426,8 @@
           <div class="pill-list" id="order-items-pills"></div>
           <div class="divider"></div>
           <div class="flex-between"><span class="view-desc">Total MRP</span><span class="num" id="order-mrp-preview" style="font-size:18px;">₹0</span></div>
+          <div class="flex-between" style="margin-top:6px;"><span class="view-desc">Total billed (after discount)</span><span class="num amber" id="order-billed-preview" style="font-size:16px;">₹0</span></div>
+          <div class="flex-between" style="margin-top:6px;"><span class="view-desc">Total incentive</span><span class="num sage" id="order-incentive-preview" style="font-size:16px;">₹0</span></div>
         </div>
         <div class="panel">
           <div class="panel-title">3. Date &amp; time</div>
@@ -901,24 +903,62 @@ function orderMrpTotal(o){
     return s + (p?.mrp||0) * billableQty(it);
   }, 0));
 }
-// Discount and incentive are independent rates — discount reduces what the
-// doctor is billed; incentive is a separate commission paid out to them/
-// their staff. Each order uses the doctor's default discount rate UNLESS
-// Admin has explicitly overridden it for that specific order (discountPctOverride).
-// IMPORTANT backward-compat: doctors added before this feature existed have
-// no discountPct field at all. Previously their bill was MRP minus their
-// incentive, i.e. the incentive rate WAS the discount rate. Falling back to
-// incentivePct here (rather than 0) means every existing doctor's bill
-// amount stays exactly the same as it always was until Admin explicitly
-// sets a distinct discount rate for them.
+// Discount and incentive rates can be set at three levels, checked in this
+// order: (1) an explicit override on this specific ORDER always wins,
+// letting Admin do a one-off deal regardless of anything else; (2) a rate
+// set on the specific PRODUCT — different items often carry very different
+// margins, so this lets each product carry its own rate; (3) the doctor's
+// own default rate, same as it's always worked. A product/doctor with no
+// rate explicitly set simply falls through to the next level — nothing
+// changes for anything nobody has touched.
+// IMPORTANT backward-compat: doctors added before the discount feature
+// existed have no discountPct field at all. Previously their bill was MRP
+// minus their incentive, i.e. the incentive rate WAS the discount rate.
+// Falling back to incentivePct here (rather than 0) means every existing
+// doctor's bill amount stays exactly the same as it always was.
 function effectiveDiscountPct(o){
   const doc = findDoc(o.doctorId);
   if(o.discountPctOverride !== undefined && o.discountPctOverride !== null) return o.discountPctOverride;
   if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
   return doc?.incentivePct || 0;
 }
-function orderDiscountAmount(o){ return Math.round(orderMrpTotal(o) * (effectiveDiscountPct(o)/100)); }
-function orderIncentive(o){ const doc=findDoc(o.doctorId); return Math.round(orderMrpTotal(o) * ((doc?.incentivePct||0)/100)); }
+function itemDiscountPct(it, doc){
+  const p = findProduct(it.code);
+  if(p && p.discountPct !== undefined && p.discountPct !== null) return p.discountPct;
+  if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
+  return doc?.incentivePct || 0;
+}
+function itemIncentivePct(it, doc){
+  const p = findProduct(it.code);
+  if(p && p.incentivePct !== undefined && p.incentivePct !== null) return p.incentivePct;
+  return doc?.incentivePct || 0;
+}
+function orderDiscountAmount(o){
+  // A manual whole-order override bypasses per-product rates entirely —
+  // it's meant as a blanket one-off, not something to blend with individual
+  // product rates.
+  if(o.discountPctOverride !== undefined && o.discountPctOverride !== null){
+    return Math.round(orderMrpTotal(o) * (o.discountPctOverride/100));
+  }
+  const doc = findDoc(o.doctorId);
+  // Summed as exact (unrounded) amounts and rounded once at the end, so
+  // that an order where every item shares the same rate produces IDENTICAL
+  // totals to the old per-order calculation — no new rounding drift for
+  // the common case where nobody's set a per-product rate.
+  const raw = orderItems(o).reduce((s,it)=>{
+    const p = findProduct(it.code);
+    return s + (p?.mrp||0) * billableQty(it) * (itemDiscountPct(it,doc)/100);
+  }, 0);
+  return Math.round(raw);
+}
+function orderIncentive(o){
+  const doc = findDoc(o.doctorId);
+  const raw = orderItems(o).reduce((s,it)=>{
+    const p = findProduct(it.code);
+    return s + (p?.mrp||0) * billableQty(it) * (itemIncentivePct(it,doc)/100);
+  }, 0);
+  return Math.round(raw);
+}
 function orderDiscounted(o){ return orderMrpTotal(o) - orderDiscountAmount(o); }
 function orderPaid(o){ return Math.round(Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0)); }
 function paymentsArr(o){ return Object.entries(o.payments||{}).map(([id,p])=>({id,...p})).sort((a,b)=> a.date<b.date?1:-1); }
@@ -965,6 +1005,10 @@ function renderProductTable(){
         <td style="text-align:right;"><input type="number" id="edit-p-mrp-${p.id}" value="${p.mrp}" style="width:100px; text-align:right;"></td>
         <td style="text-align:center;"><input type="number" min="0" id="edit-p-stock-${p.id}" value="${stockTrackingEnabled(p) ? p.stock : ''}" placeholder="untracked" style="width:80px; text-align:center;"></td>
         <td><input type="date" id="edit-p-restock-${p.id}" value="${p.restockDate||''}" style="width:140px;"></td>
+        <td colspan="2" style="white-space:nowrap;">
+          <input type="number" min="0" id="edit-p-discount-${p.id}" value="${p.discountPct??''}" placeholder="doctor default" style="width:100px; text-align:center;">
+          <input type="number" min="0" id="edit-p-incentive-${p.id}" value="${p.incentivePct??''}" placeholder="doctor default" style="width:100px; text-align:center;">
+        </td>
         <td style="white-space:nowrap;">
           <button class="btn btn-sm" onclick="saveProduct('${p.id}')">Save</button>
           <button class="btn btn-outline btn-sm" onclick="cancelEditProduct()">Cancel</button>
@@ -973,10 +1017,12 @@ function renderProductTable(){
     }
     const stock = effectiveStock(p);
     const stockDisplay = !stockTrackingEnabled(p) && !p.outOfStock ? `<span style="color:var(--cream-faint);">untracked</span>` : `<span class="num" style="color:${stock<=0?'var(--rust)':(stock<10?'var(--amber-bright)':'var(--sage)')}">${isFinite(stock)?stock:'—'}</span>`;
+    const hasOwnRates = (p.discountPct!==undefined && p.discountPct!==null) || (p.incentivePct!==undefined && p.incentivePct!==null);
+    const rateNote = hasOwnRates ? ` <span style="color:var(--amber-bright); font-size:11px;" title="This product has its own discount/incentive rate, overriding the doctor default">(${p.discountPct??'—'}% / ${p.incentivePct??'—'}%)</span>` : '';
     return `<tr>
       <td class="num">${i+1}</td>
       <td class="num">${p.code}</td>
-      <td>${p.name}</td>
+      <td>${p.name}${rateNote}</td>
       <td>${p.category}</td>
       <td class="num" style="text-align:right;">${money(p.mrp)}</td>
       <td style="text-align:center;">${stockDisplay}</td>
@@ -997,15 +1043,19 @@ async function saveProduct(id){
   const mrp = Math.round(parseFloat(document.getElementById(`edit-p-mrp-${id}`).value) || 0);
   const stockRaw = document.getElementById(`edit-p-stock-${id}`).value;
   const restockDate = document.getElementById(`edit-p-restock-${id}`).value || null;
+  const discountRaw = document.getElementById(`edit-p-discount-${id}`).value;
+  const incentiveRaw = document.getElementById(`edit-p-incentive-${id}`).value;
   if(!code || !name){ alert('Code and name are required.'); return; }
   const payload = { code, name, category, mrp };
-  // Leaving the stock field blank means "untracked" (unlimited, like
-  // before) — an explicit number (including 0) turns tracking on for this
-  // product. This is a full .set() (replacing the whole product), so both
-  // fields must be explicitly included one way or the other, or they'd be
-  // silently wiped on every edit.
+  // Leaving a rate field blank means "use the doctor's default", exactly
+  // like leaving Stock blank means "untracked" — an explicit number (even
+  // 0) turns on a rate specific to this product. This is a full .set()
+  // (replacing the whole product), so every field that should survive must
+  // be explicitly included here, or it'd be silently wiped on every edit.
   if(stockRaw !== ''){ payload.stock = Math.max(0, Math.round(parseFloat(stockRaw)) || 0); }
   if(restockDate){ payload.restockDate = restockDate; }
+  if(discountRaw !== ''){ payload.discountPct = Math.max(0, parseFloat(discountRaw) || 0); }
+  if(incentiveRaw !== ''){ payload.incentivePct = Math.max(0, parseFloat(incentiveRaw) || 0); }
   try{
     await db.ref(`products/${id}`).set(payload);
     editingProductId = null;
@@ -1108,6 +1158,8 @@ function parseCsvRows(raw){
       if(stockTrackingEnabled(old)) preserved.stock = old.stock;
       if(old.restockDate) preserved.restockDate = old.restockDate;
       if(old.outOfStock) preserved.outOfStock = old.outOfStock;
+      if(old.discountPct !== undefined && old.discountPct !== null) preserved.discountPct = old.discountPct;
+      if(old.incentivePct !== undefined && old.incentivePct !== null) preserved.incentivePct = old.incentivePct;
     }
     updates[sanitizeKey(code)] = { code, name, category: category||'', mrp, ...preserved };
   });
@@ -1445,28 +1497,31 @@ function renderAdminOrders(){
     const doc = findDocSafe(o.doctorId);
     const billPhone = doc.accounts.doctor.phone;
     const mrp=orderMrpTotal(o), inc=orderIncentive(o), disc=orderDiscounted(o);
-    const discPct = effectiveDiscountPct(o);
+    const discPct = mrp > 0 ? Math.round((orderDiscountAmount(o) / mrp) * 1000) / 10 : 0;
     const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
     const items = orderItems(o);
     const hasUnavailable = items.some(it=>(it.unavailableQty||0) > 0);
     const locked = o.status === 'confirmed';
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
-    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:center;">Unavailable</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
+    const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:center;">Unavailable</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:center;">Disc %</th><th style="text-align:center;">Inc %</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
       ${items.map((it,i)=>{
         const p = findProduct(it.code);
         const qty = it.qty||1;
         const unavailQty = it.unavailableQty || 0;
         const billable = billableQty(it);
         const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
-        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="5" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td></tr>`;
+        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="7" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td></tr>`;
+        const lineDiscPct = o.discountPctOverride!==undefined && o.discountPctOverride!==null ? o.discountPctOverride : itemDiscountPct(it, doc);
+        const lineIncPct = itemIncentivePct(it, doc);
+        const usesOwnRate = p.discountPct !== undefined && p.discountPct !== null;
         return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.autoFlagged ? ` <span style="color:var(--amber-bright); font-size:11px;">(auto-flagged: stock ran short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td style="text-align:center; white-space:nowrap;">
           ${!locked ? `<input type="number" min="0" max="${qty}" value="${unavailQty}" style="width:56px; text-align:center;" onchange="setItemUnavailableQty('${o.id}',${i},this.value)">` : `<span class="num">${unavailQty}</span>`}
-        </td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
+        </td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:center;" title="${usesOwnRate?'This product has its own rate':'Using doctor default'}">${lineDiscPct}%${usesOwnRate?' •':''}</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
       }).join('')}
-      <tr><td colspan="7" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+      <tr><td colspan="9" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
-    <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total${hasUnavailable ? ` · ${items.reduce((s,it)=>s+(it.unavailableQty||0),0)} units unavailable` : ''}</div>`;
+    <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total${hasUnavailable ? ` · ${items.reduce((s,it)=>s+(it.unavailableQty||0),0)} units unavailable` : ''} · • marks a product with its own discount rate</div>`;
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
       ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable unit(s) and wants to proceed — ready for final confirmation.</div>` : ''}
       ${itemsTable}
@@ -1478,8 +1533,8 @@ function renderAdminOrders(){
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Discount for this order</div>
       <div class="hint" style="margin:0 0 8px;">
-        Currently applying <b style="color:var(--amber-bright)">${discPct}%</b> (${money(orderDiscountAmount(o))} off MRP)
-        ${isOverridden ? ` — <span style="color:var(--rust);">overridden for this order</span> (doctor's default is ${doc.discountPct??0}%)` : ` — doctor's default rate`}
+        Effectively <b style="color:var(--amber-bright)">${discPct}%</b> overall (${money(orderDiscountAmount(o))} off MRP)
+        ${isOverridden ? ` — <span style="color:var(--rust);">overridden for this order</span> (ignores any per-product rates while this is set)` : ` — per-item rates shown in the table above; blank cells use the doctor's default (${doc.discountPct??doc.incentivePct??0}%)`}
       </div>
       <div class="row">
         <div><input type="number" id="disc-override-${o.id}" placeholder="e.g. 15" value="${isOverridden ? o.discountPctOverride : ''}"></div>
@@ -1712,19 +1767,22 @@ function orderCardHtml(o){
   const needsReview = o.status === 'needs_review';
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
   const mrp = orderMrpTotal(o);
+  const doc = findDoc(o.doctorId);
   const items = orderItems(o);
   const shortItems = items.filter(it=>(it.unavailableQty||0) > 0);
-  const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
+  const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:center;">Disc %</th><th style="text-align:center;">Inc %</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
     ${items.map((it,i)=>{
       const p = findProduct(it.code);
       const qty = it.qty||1;
       const unavailQty = it.unavailableQty || 0;
       const billable = billableQty(it);
       const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
-      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="4" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
-      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${unavailQty>0 ? ` <span style="color:var(--rust); font-size:11px;">(${unavailQty} of ${qty} short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
+      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="6" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
+      const lineDiscPct = o.discountPctOverride!==undefined && o.discountPctOverride!==null ? o.discountPctOverride : itemDiscountPct(it, doc);
+      const lineIncPct = itemIncentivePct(it, doc);
+      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${unavailQty>0 ? ` <span style="color:var(--rust); font-size:11px;">(${unavailQty} of ${qty} short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:center;">${lineDiscPct}%</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
     }).join('')}
-    <tr><td colspan="6" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
+    <tr><td colspan="8" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
   </tbody></table></div>`;
   const statusBadge = isConfirmed ? `<span class="badge confirmed">Confirmed</span>`
     : needsReview ? `<span class="badge partial">Action needed</span>`
@@ -1805,6 +1863,7 @@ function renderOrderProductSearch(){
   const q = document.getElementById('order-product-search').value.trim().toLowerCase();
   const box = document.getElementById('order-product-results');
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const doc = SESSION && SESSION.role==='doctor' ? findDoc(SESSION.doctorId) : null;
   // Out-of-stock products don't show up here at all — this is what actually
   // keeps a doctor from ordering something that's fully unavailable,
   // rather than just relying on them not noticing.
@@ -1813,7 +1872,10 @@ function renderOrderProductSearch(){
   box.innerHTML = matches.map(p=>{
     const stock = effectiveStock(p);
     const stockNote = isFinite(stock) ? ` <span style="color:var(--cream-faint); font-size:11px;">(${stock} in stock)</span>` : '';
-    return `<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${escapeAttr(p.name)}${stockNote} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`;
+    const discPct = itemDiscountPct({code:p.code}, doc);
+    const incPct = itemIncentivePct({code:p.code}, doc);
+    const rateNote = ` <span style="color:var(--amber-bright); font-size:11px;">${discPct}% off, ${incPct}% incentive</span>`;
+    return `<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${escapeAttr(p.name)}${stockNote}${rateNote} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`;
   }).join('');
 }
 // Adding a product already in the order just bumps its quantity by one,
@@ -1844,6 +1906,7 @@ function setOrderQty(code, value){
   renderOrderPills();
 }
 function renderOrderPills(){
+  const doc = SESSION && SESSION.role==='doctor' ? findDoc(SESSION.doctorId) : null;
   document.getElementById('order-items-pills').innerHTML = orderDraftItems.map(it=>{
     const p=findProduct(it.code);
     if(!p) return '';
@@ -1853,6 +1916,11 @@ function renderOrderPills(){
     const stockWarning = short
       ? ` <span style="color:var(--rust); font-size:11px;">(only ${Math.max(stock,0)} in stock — rest will be flagged for the Sante team${p.restockDate ? `, expected ${p.restockDate}` : ''})</span>`
       : '';
+    const discPct = itemDiscountPct(it, doc);
+    const incPct = itemIncentivePct(it, doc);
+    const lineMrp = p.mrp*qty;
+    const lineBilled = Math.round(lineMrp * (1 - discPct/100));
+    const lineIncentive = Math.round(lineMrp * (incPct/100));
     return `<span class="pill">
       <span>${escapeAttr(p.name)}${stockWarning}</span>
       <span style="display:inline-flex; align-items:center; gap:4px;">
@@ -1860,11 +1928,17 @@ function renderOrderPills(){
         <input type="number" min="1" value="${qty}" onchange="setOrderQty('${it.code}', this.value)" style="width:40px; text-align:center; padding:2px; font-size:12px;">
         <button type="button" onclick="incrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">+</button>
       </span>
-      <span style="color:var(--cream-faint);">${money(p.mrp)} × ${qty} = ${money(p.mrp*qty)}</span>
+      <span style="color:var(--cream-faint);">MRP ${money(p.mrp)} × ${qty} = ${money(lineMrp)}</span>
+      <span style="color:var(--amber-bright);">${discPct}% off → ${money(lineBilled)}</span>
+      <span style="color:var(--sage);">${incPct}% incentive → ${money(lineIncentive)}</span>
       <button onclick="removeOrderProduct('${it.code}')">×</button>
     </span>`;
   }).join('');
   document.getElementById('order-mrp-preview').textContent = money(itemsTotal(orderDraftItems));
+  const rawBilled = orderDraftItems.reduce((s,it)=>{ const p=findProduct(it.code); if(!p) return s; const q=it.qty||1; return s + p.mrp*q*(1-itemDiscountPct(it,doc)/100); }, 0);
+  const rawIncentive = orderDraftItems.reduce((s,it)=>{ const p=findProduct(it.code); if(!p) return s; const q=it.qty||1; return s + p.mrp*q*(itemIncentivePct(it,doc)/100); }, 0);
+  document.getElementById('order-billed-preview').textContent = money(Math.round(rawBilled));
+  document.getElementById('order-incentive-preview').textContent = money(Math.round(rawIncentive));
 }
 function restockEtaText(p){
   if(p && p.restockDate) return `expected back by ${p.restockDate}`;
@@ -2030,7 +2104,8 @@ function buildDoctorReportData(doctorId){
   const rows = orders.map(o=>{
     const mrp=orderMrpTotal(o), disc=orderDiscounted(o), paid=orderPaid(o), inc=orderIncentive(o);
     const incPaid = payoutsArr().filter(p=>p.orderId===o.id).reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
-    return { o, mrp, disc, paid, balance: disc-paid, inc, incPaid, incBalance: inc-incPaid, discPct: effectiveDiscountPct(o) };
+    const discPct = mrp > 0 ? Math.round(((mrp-disc) / mrp) * 1000) / 10 : 0;
+    return { o, mrp, disc, paid, balance: disc-paid, inc, incPaid, incBalance: inc-incPaid, discPct };
   });
   const totals = rows.reduce((acc,r)=>({
     orders: acc.orders+1, mrp: acc.mrp+r.mrp, billed: acc.billed+r.disc, paid: acc.paid+r.paid,
