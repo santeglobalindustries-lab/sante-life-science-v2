@@ -329,7 +329,7 @@
           <span class="view-desc" id="product-count"></span>
         </div>
         <div class="table-wrap">
-          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
+          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th style="text-align:center;">Discount %</th><th style="text-align:center;">Incentive %</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
       </div>
 
@@ -1005,34 +1005,34 @@ function renderProductTable(){
         <td style="text-align:right;"><input type="number" id="edit-p-mrp-${p.id}" value="${p.mrp}" style="width:100px; text-align:right;"></td>
         <td style="text-align:center;"><input type="number" min="0" id="edit-p-stock-${p.id}" value="${stockTrackingEnabled(p) ? p.stock : ''}" placeholder="untracked" style="width:80px; text-align:center;"></td>
         <td><input type="date" id="edit-p-restock-${p.id}" value="${p.restockDate||''}" style="width:140px;"></td>
-        <td colspan="2" style="white-space:nowrap;">
-          <input type="number" min="0" id="edit-p-discount-${p.id}" value="${p.discountPct??''}" placeholder="doctor default" style="width:100px; text-align:center;">
-          <input type="number" min="0" id="edit-p-incentive-${p.id}" value="${p.incentivePct??''}" placeholder="doctor default" style="width:100px; text-align:center;">
-        </td>
+        <td style="text-align:center;"><input type="number" min="0" id="edit-p-discount-${p.id}" value="${p.discountPct??''}" placeholder="default" title="Discount % for this product — blank uses the doctor's own rate" style="width:80px; text-align:center;"></td>
+        <td style="text-align:center;"><input type="number" min="0" id="edit-p-incentive-${p.id}" value="${p.incentivePct??''}" placeholder="default" title="Incentive % for this product — blank uses the doctor's own rate" style="width:80px; text-align:center;"></td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-sm" onclick="saveProduct('${p.id}')">Save</button>
+          <button class="btn btn-sm" id="save-p-btn-${p.id}" onclick="saveProduct('${p.id}')">Save</button>
           <button class="btn btn-outline btn-sm" onclick="cancelEditProduct()">Cancel</button>
         </td>
       </tr>`;
     }
     const stock = effectiveStock(p);
     const stockDisplay = !stockTrackingEnabled(p) && !p.outOfStock ? `<span style="color:var(--cream-faint);">untracked</span>` : `<span class="num" style="color:${stock<=0?'var(--rust)':(stock<10?'var(--amber-bright)':'var(--sage)')}">${isFinite(stock)?stock:'—'}</span>`;
-    const hasOwnRates = (p.discountPct!==undefined && p.discountPct!==null) || (p.incentivePct!==undefined && p.incentivePct!==null);
-    const rateNote = hasOwnRates ? ` <span style="color:var(--amber-bright); font-size:11px;" title="This product has its own discount/incentive rate, overriding the doctor default">(${p.discountPct??'—'}% / ${p.incentivePct??'—'}%)</span>` : '';
+    const hasOwnDiscount = p.discountPct!==undefined && p.discountPct!==null;
+    const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
     return `<tr>
       <td class="num">${i+1}</td>
       <td class="num">${p.code}</td>
-      <td>${p.name}${rateNote}</td>
+      <td>${p.name}</td>
       <td>${p.category}</td>
       <td class="num" style="text-align:right;">${money(p.mrp)}</td>
       <td style="text-align:center;">${stockDisplay}</td>
       <td>${p.restockDate ? escapeAttr(p.restockDate) : '<span style="color:var(--cream-faint);">—</span>'}</td>
+      <td class="num" style="text-align:center;">${hasOwnDiscount ? `<span style="color:var(--amber-bright);">${p.discountPct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
+      <td class="num" style="text-align:center;">${hasOwnIncentive ? `<span style="color:var(--amber-bright);">${p.incentivePct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
       <td style="white-space:nowrap;">
         <button class="btn btn-outline btn-sm" onclick="startEditProduct('${p.id}')">Edit</button>
         <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" class="empty">No matches.</td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">No matches.</td></tr>`;
 }
 function startEditProduct(id){ editingProductId = id; renderProductTable(); }
 function cancelEditProduct(){ editingProductId = null; renderProductTable(); }
@@ -1056,10 +1056,19 @@ async function saveProduct(id){
   if(restockDate){ payload.restockDate = restockDate; }
   if(discountRaw !== ''){ payload.discountPct = Math.max(0, parseFloat(discountRaw) || 0); }
   if(incentiveRaw !== ''){ payload.incentivePct = Math.max(0, parseFloat(incentiveRaw) || 0); }
+  const btn = document.getElementById(`save-p-btn-${id}`);
+  if(btn){ btn.textContent = 'Saving…'; btn.disabled = true; }
   try{
     await db.ref(`products/${id}`).set(payload);
+    // Explicitly close edit mode and re-render right now, rather than
+    // waiting on the realtime listener — that listener can fire (and
+    // re-render) WHILE this write is still in flight, before editingProductId
+    // is cleared below, which left the row stuck showing the edit form even
+    // though the save had actually gone through.
     editingProductId = null;
+    renderProductTable();
   }catch(err){
+    if(btn){ btn.textContent = 'Save'; btn.disabled = false; }
     alert('Could not save changes: ' + err.message);
   }
 }
