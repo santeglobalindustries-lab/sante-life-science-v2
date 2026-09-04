@@ -376,6 +376,10 @@
           <div class="hint" style="margin:8px 0 0;">Discount reduces what the doctor is billed. Incentive is the commission paid out to them/their staff — the two are independent and can be set to different rates.</div>
           <button class="btn btn-sm" style="margin-top:14px;" onclick="createDoctor()">Add doctor</button>
         </div>
+        <div class="panel">
+          <input type="text" id="doctor-search" placeholder="Search doctors by name…" oninput="renderDoctorsList()">
+          <div class="view-desc" id="doctor-count" style="margin-top:8px;"></div>
+        </div>
         <div id="doctors-list"></div>
       </div>
 
@@ -1424,7 +1428,29 @@ async function resetBinding(doctorId, accountKey){
 }
 
 function renderDoctorsList(){
-  document.getElementById('doctors-list').innerHTML = doctorsArr().map(d=>{
+  const q = (document.getElementById('doctor-search')?.value || '').trim().toLowerCase();
+  const all = doctorsArr();
+  let list = all;
+  if(q){
+    // Names starting with the search term come first (alphabetical among
+    // themselves), then names that merely contain it elsewhere — this
+    // matches how most people expect a name search to behave, rather than
+    // a flat alphabetical or database-insertion-order list once there are
+    // dozens of doctors to page through.
+    const starts = [], contains = [];
+    for(const d of all){
+      const name = (d.name||'').toLowerCase();
+      const words = name.split(/\s+/);
+      if(words.some(w => w.startsWith(q))) starts.push(d);
+      else if(name.includes(q)) contains.push(d);
+    }
+    starts.sort((a,b)=> a.name.localeCompare(b.name));
+    contains.sort((a,b)=> a.name.localeCompare(b.name));
+    list = [...starts, ...contains];
+  }
+  const countEl = document.getElementById('doctor-count');
+  if(countEl) countEl.textContent = q ? `${list.length} of ${all.length} doctors` : `${all.length} doctor${all.length===1?'':'s'}`;
+  document.getElementById('doctors-list').innerHTML = list.map(d=>{
     const rows = ['doctor','technician','helper'].map(key=>{
       const acc = d.accounts[key];
       const status = acc.bound ? `<span class="badge bound">Fingerprint set</span>` : (acc.pinHash ? `<span class="badge pending">PIN sent, awaiting setup</span>` : `<span class="badge unbound">Not set up</span>`);
@@ -1458,7 +1484,7 @@ function renderDoctorsList(){
       ${head}
       ${rows}
     </div>`;
-  }).join('') || `<div class="empty">No doctors yet.</div>`;
+  }).join('') || (q ? `<div class="empty">No doctors match "${escapeAttr(q)}".</div>` : `<div class="empty">No doctors yet.</div>`);
 }
 function startEditDoctor(id){ editingDoctorId = id; renderDoctorsList(); }
 function cancelEditDoctor(){ editingDoctorId = null; renderDoctorsList(); }
