@@ -688,8 +688,8 @@ function submitAdminLogin(){
 function findAccountByPhone(phone){
   const clean = phone.replace(/[^\d]/g,'');
   for(const doc of doctorsArr()){
-    for(const key of ['doctor','technician','helper']){
-      const acc = doc.accounts && doc.accounts[key];
+    for(const key of Object.keys(doc.accounts||{})){
+      const acc = doc.accounts[key];
       if(acc && acc.phone && acc.phone.replace(/[^\d]/g,'').endsWith(clean.slice(-10))){
         return { doctorId: doc.id, accountKey: key, account: acc, doctor: doc };
       }
@@ -1394,18 +1394,62 @@ async function createDoctor(){
   const incentivePct = parseFloat(document.getElementById('doc-incentive').value)||0;
   const dueDays = parseInt(document.getElementById('doc-due-days').value)||30;
   if(!name || !phone){ alert('Doctor name and WhatsApp number are required.'); return; }
+  const now = Date.now();
+  const blankAccount = (label, order) => ({ label, phone:'', pinHash:null, credentialId:null, bound:false, createdAt: now+order });
   try{
     await db.ref('doctors/' + uid('doc')).set({
       name, discountPct, incentivePct, dueDays,
+      requireDoctorReview: false,
       accounts: {
-        doctor:     { label: `${name} (Doctor)`,        phone, pinHash:null, credentialId:null, bound:false },
-        technician: { label: `Technician — ${name}`,     phone:'', pinHash:null, credentialId:null, bound:false },
-        helper:     { label: `Helper — ${name}`,          phone:'', pinHash:null, credentialId:null, bound:false }
+        // 'doctor' is a fixed, special key — always exactly one, can't be
+        // removed. Staff accounts use dynamic keys so Admin can add or
+        // remove as many as a doctor actually needs (some have 3-5 people
+        // working under them) rather than being stuck with a fixed count.
+        doctor: { label: `${name} (Doctor)`, phone, pinHash:null, credentialId:null, bound:false, isPrimary:true, createdAt: now },
+        [uid('staff')]: blankAccount('Technician', 1),
+        [uid('staff')]: blankAccount('Helper', 2),
+        [uid('staff')]: blankAccount('Helper', 3),
       }
     });
     ['doc-name','doc-phone','doc-discount','doc-incentive','doc-due-days'].forEach(id=>document.getElementById(id).value='');
   }catch(err){
     alert('Could not save this doctor: ' + err.message + '\n\nIf this says "Permission denied", enable Anonymous sign-in in Firebase Authentication and refresh the page.');
+  }
+}
+async function addStaffAccount(doctorId){
+  const label = prompt('Label for this account (e.g. "Technician", "Helper", "Front desk"):', 'Staff');
+  if(label === null) return; // cancelled
+  const trimmed = label.trim() || 'Staff';
+  try{
+    await db.ref(`doctors/${doctorId}/accounts/${uid('staff')}`).set({
+      label: trimmed, phone:'', pinHash:null, credentialId:null, bound:false, createdAt: Date.now()
+    });
+  }catch(err){
+    alert('Could not add this account: ' + err.message);
+  }
+}
+async function renameStaffAccount(doctorId, accountKey, value){
+  const label = value.trim();
+  if(!label){ alert('Label cannot be empty.'); renderDoctorsList(); return; }
+  try{
+    await db.ref(`doctors/${doctorId}/accounts/${accountKey}/label`).set(label);
+  }catch(err){
+    alert('Could not rename this account: ' + err.message);
+  }
+}
+async function removeStaffAccount(doctorId, accountKey, label){
+  if(!confirm(`Remove the "${label}" account? Its login will stop working immediately. This cannot be undone.`)) return;
+  try{
+    await db.ref(`doctors/${doctorId}/accounts/${accountKey}`).remove();
+  }catch(err){
+    alert('Could not remove this account: ' + err.message);
+  }
+}
+async function toggleRequireDoctorReview(doctorId, value){
+  try{
+    await db.ref(`doctors/${doctorId}/requireDoctorReview`).set(!!value);
+  }catch(err){
+    alert('Could not update this setting: ' + err.message);
   }
 }
 
@@ -1451,14 +1495,28 @@ function renderDoctorsList(){
   const countEl = document.getElementById('doctor-count');
   if(countEl) countEl.textContent = q ? `${list.length} of ${all.length} doctors` : `${all.length} doctor${all.length===1?'':'s'}`;
   document.getElementById('doctors-list').innerHTML = list.map(d=>{
-    const rows = ['doctor','technician','helper'].map(key=>{
+    // 'doctor' is the fixed primary account; every other key is a staff
+    // account that Admin can add, rename, or remove freely. Sorted so the
+    // doctor's own login always appears first, then staff in the order they
+    // were added.
+    const accountKeys = Object.keys(d.accounts||{}).sort((a,b)=>{
+      const aAcc = d.accounts[a], bAcc = d.accounts[b];
+      if(aAcc.isPrimary) return -1;
+      if(bAcc.isPrimary) return 1;
+      return (aAcc.createdAt||0) - (bAcc.createdAt||0);
+    });
+    const rows = accountKeys.map(key=>{
       const acc = d.accounts[key];
       const status = acc.bound ? `<span class="badge bound">Fingerprint set</span>` : (acc.pinHash ? `<span class="badge pending">PIN sent, awaiting setup</span>` : `<span class="badge unbound">Not set up</span>`);
+      const labelField = acc.isPrimary
+        ? `<div class="acc-label">${escapeAttr(acc.label)} ${status}</div>`
+        : `<div class="acc-label" style="display:flex; align-items:center; gap:6px;"><input type="text" value="${escapeAttr(acc.label)}" onchange="renameStaffAccount('${d.id}','${key}',this.value)" style="max-width:160px; font-size:12px;"> ${status}</div>`;
       return `<div class="account-row">
-        <div class="acc-label">${acc.label} ${status}</div>
+        ${labelField}
         <input type="tel" placeholder="Phone number" value="${acc.phone||''}" onchange="saveAccountPhone('${d.id}','${key}',this.value)">
         <button class="btn btn-outline btn-sm" onclick="issuePin('${d.id}','${key}')">Issue one-time password</button>
         ${acc.bound ? `<button class="btn btn-outline btn-sm" onclick="resetBinding('${d.id}','${key}')">Reset</button>` : ''}
+        ${!acc.isPrimary ? `<button class="btn btn-outline btn-sm" onclick="removeStaffAccount('${d.id}','${key}','${escapeAttr(acc.label).replace(/'/g,"\\'")}')" style="color:var(--rust);">Remove</button>` : ''}
       </div>`;
     }).join('');
 
@@ -1475,9 +1533,14 @@ function renderDoctorsList(){
         <div><span class="kit-name">${d.name}</span></div>
         <span class="tray-dots">${d.discountPct??d.incentivePct??0}% DISCOUNT · ${d.incentivePct}% INCENTIVE · ${d.dueDays}D DUE</span>
       </div>
-      <div style="display:flex; gap:8px; margin:6px 0 12px;">
+      <div style="display:flex; gap:8px; margin:6px 0 12px; flex-wrap:wrap; align-items:center;">
         <button class="btn btn-outline btn-sm" onclick="startEditDoctor('${d.id}')">Edit name / discount / incentive / due days</button>
-        <button class="btn btn-outline btn-sm" onclick="deleteDoctor('${d.id}')" style="color:var(--rust);">Delete doctor</button>
+        <button class="btn btn-outline btn-sm" onclick="addStaffAccount('${d.id}')">+ Add staff account</button>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--cream-dim); margin-left:8px;">
+          <input type="checkbox" ${d.requireDoctorReview ? 'checked' : ''} onchange="toggleRequireDoctorReview('${d.id}', this.checked)">
+          Require doctor's approval before staff orders reach us
+        </label>
+        <button class="btn btn-outline btn-sm" onclick="deleteDoctor('${d.id}')" style="color:var(--rust); margin-left:auto;">Delete doctor</button>
       </div>`;
 
     return `<div class="manifest">
@@ -1519,15 +1582,20 @@ async function deleteDoctor(id){
 function orderStatusLabel(o){
   if(o.status === 'confirmed') return 'confirmed';
   if(o.status === 'needs_review') return 'needs doctor review';
+  if(o.status === 'awaiting_doctor_approval') return "awaiting doctor's approval";
   return 'pending';
 }
 function orderStatusBadgeClass(o){
   if(o.status === 'confirmed') return 'confirmed';
   if(o.status === 'needs_review') return 'partial';
+  if(o.status === 'awaiting_doctor_approval') return 'pending';
   return 'pending';
 }
 function renderAdminOrders(){
-  const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+  // Orders a staff member placed that still need the doctor's own approval
+  // shouldn't be visible to Admin at all yet — they only appear here once
+  // approved (status flips to 'pending').
+  const list = ordersArr().filter(o=>o.status !== 'awaiting_doctor_approval').sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-orders-list').innerHTML = list.length ? list.map(o=>{
     const doc = findDocSafe(o.doctorId);
     const billPhone = doc.accounts.doctor.phone;
@@ -1800,6 +1868,8 @@ function orderCardHtml(o){
   const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
   const isConfirmed = o.status === 'confirmed';
   const needsReview = o.status === 'needs_review';
+  const awaitingApproval = o.status === 'awaiting_doctor_approval';
+  const isDoctorLogin = SESSION && SESSION.accountKey === 'doctor';
   const paymentStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial' : 'due');
   const mrp = orderMrpTotal(o);
   const doc = findDoc(o.doctorId);
@@ -1821,6 +1891,7 @@ function orderCardHtml(o){
   </tbody></table></div>`;
   const statusBadge = isConfirmed ? `<span class="badge confirmed">Confirmed</span>`
     : needsReview ? `<span class="badge partial">Action needed</span>`
+    : awaitingApproval ? `<span class="badge pending">Awaiting doctor's approval</span>`
     : `<span class="badge pending">Pending confirmation</span>`;
   const unavailableBanner = needsReview ? `<div style="border:1px solid var(--rust); padding:10px; margin:10px 0; font-size:13px;">
       <div style="color:var(--rust); margin-bottom:6px;">Some units in this order are short on stock:</div>
@@ -1834,12 +1905,26 @@ function orderCardHtml(o){
         <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>
       </div>
     </div>` : '';
+  const approvalBanner = awaitingApproval ? (
+    isDoctorLogin ? `<div style="border:1px solid var(--amber); padding:10px; margin:10px 0; font-size:13px;">
+        <div style="color:var(--amber-bright); margin-bottom:8px;">${escapeAttr(o.accountLabel||'A staff member')} placed this order — review it before it's sent to the Sante team.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-sm" onclick="approveStaffOrder('${o.id}')">Approve</button>
+          <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit before approving</button>
+          <button class="btn btn-outline btn-sm" onclick="rejectStaffOrder('${o.id}')" style="color:var(--rust);">Reject</button>
+        </div>
+      </div>` : `<div style="border:1px solid var(--line); padding:10px; margin:10px 0; font-size:12px; color:var(--amber-bright);">
+        Waiting for ${escapeAttr(doc?.name||'the doctor')} to review and approve this order before it's sent to the Sante team.
+        <div style="margin-top:8px;"><button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button></div>
+      </div>`
+  ) : '';
   return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
     <div style="display:flex; gap:6px; align-items:center;">
       ${statusBadge}
       ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
     </div></div>
     ${unavailableBanner}
+    ${approvalBanner}
     ${itemsTable}
     <div class="row" style="margin-top:10px;">
       <div class="stat-card" style="padding:10px;"><div class="label">MRP</div><div class="value" style="font-size:14px;">${money(mrp)}</div></div>
@@ -1847,11 +1932,32 @@ function orderCardHtml(o){
       <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
     </div>
-    ${!isConfirmed && !needsReview ? `<div style="margin-top:10px; display:flex; gap:8px;">
+    ${!isConfirmed && !needsReview && !awaitingApproval ? `<div style="margin-top:10px; display:flex; gap:8px;">
       <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit</button>
       <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>
     </div>` : isConfirmed ? `<div class="hint" style="margin:10px 0 0; font-size:11px;">This order is confirmed and locked — contact the Sante team for any changes.</div>` : ''}
     </div>`;
+}
+async function approveStaffOrder(orderId){
+  try{
+    await db.ref('orders/'+orderId+'/status').set('pending');
+  }catch(err){
+    alert('Could not approve: ' + err.message);
+  }
+}
+async function rejectStaffOrder(orderId){
+  const o = myOrders().find(x=>x.id===orderId);
+  if(!o) return;
+  if(!confirm('Reject this order? It will be deleted and any reserved stock returned to inventory. This cannot be undone.')) return;
+  try{
+    for(const it of orderItems(o)){
+      const reserved = (it.qty||1) - (it.unavailableQty||0);
+      await releaseStock(it.code, reserved);
+    }
+    await db.ref('orders/'+orderId).remove();
+  }catch(err){
+    alert('Could not reject: ' + err.message);
+  }
 }
 async function acknowledgeUnavailable(orderId){
   if(!confirm("Proceed with this order without the unavailable unit(s)? It'll go back to the Sante team for final confirmation.")) return;
@@ -2052,7 +2158,13 @@ async function placeOrder(){
 
   if(existingOrder){
     const updatePayload = { items, productCodes:null, date, time };
-    if(existingOrder.status === 'needs_review') Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
+    if(existingOrder.status === 'needs_review'){
+      Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
+    } else if(existingOrder.status === 'awaiting_doctor_approval' && SESSION.accountKey === 'doctor'){
+      // The doctor editing their own staff's order counts as approving it
+      // (with whatever changes they just made) — it can now go to Admin.
+      updatePayload.status = 'pending';
+    }
     try{
       await db.ref('orders/'+editingOrderId).update(updatePayload);
       alert('Order updated.');
@@ -2064,13 +2176,27 @@ async function placeOrder(){
     showView('doc-orders');
     return;
   }
+
+  // A staff-placed (non-"doctor" account) order goes to the doctor for
+  // approval first when that doctor has the review toggle on — Admin
+  // doesn't see it at all until the doctor approves it. The doctor's own
+  // login always skips this, since they ARE the approver.
+  const doctorRecord = findDoc(SESSION.doctorId);
+  const needsApproval = SESSION.accountKey !== 'doctor' && !!(doctorRecord && doctorRecord.requireDoctorReview);
   await db.ref('orders/' + uid('ord')).set({
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
     items,
-    date, time, status:'pending', createdAt: new Date().toISOString()
+    date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'pending', createdAt: new Date().toISOString()
   });
-  alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
+  if(needsApproval){
+    const doctorPhone = doctorRecord.accounts.doctor && doctorRecord.accounts.doctor.phone;
+    const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order that needs your review before it's sent to Sante Life Science.\nPlease open the Kit Desk app to approve, edit, or reject it.\n— Sante Life Science`;
+    if(doctorPhone) window.open(`https://wa.me/${doctorPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+    alert("Order submitted for the doctor's approval. They'll need to review it before it reaches the Sante team.");
+  } else {
+    alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
+  }
   showView('doc-orders');
 }
 function editOrder(id){
