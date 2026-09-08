@@ -127,6 +127,7 @@
   .badge.partial{ color:var(--amber-bright); border-color:var(--amber); }
   .badge.bound{ color:var(--sage); border-color:var(--sage); }
   .badge.unbound{ color:var(--rust); border-color:var(--rust); }
+  .badge.deleted{ color:var(--cream-faint); border-color:var(--line); }
 
   .panel{ border:1px solid var(--line); background:var(--bg2); padding:24px; margin-bottom:22px; }
   .panel-title{ font-family:'Cormorant Garamond',serif; font-size:19px; margin-bottom:16px; color:var(--cream); }
@@ -293,7 +294,7 @@
           <div class="view-desc">Live snapshot across every doctor account.</div>
         </div>
         <div class="stat-row" id="admin-stats"></div>
-        <div class="panel"><div class="panel-title">Orders awaiting confirmation</div><div id="admin-pending-orders"></div></div>
+        <div class="panel"><div class="panel-title">Recently deleted orders</div><div id="admin-pending-orders"></div></div>
       </div>
 
       <!-- ===== ADMIN: Products ===== -->
@@ -399,8 +400,12 @@
 
       <!-- ===== ADMIN: Orders ===== -->
       <div class="view" id="v-admin-orders">
-        <div class="view-header"><div class="eyebrow">Queue</div><div class="view-title serif">Orders</div><div class="view-desc">Review, confirm, and send the WhatsApp bill.</div></div>
+        <div class="view-header"><div class="eyebrow">Queue</div><div class="view-title serif">Orders</div><div class="view-desc">Orders are confirmed automatically as they're placed — manage stock and send the WhatsApp bill here.</div></div>
         <div id="admin-orders-list"></div>
+        <div class="divider" style="margin:24px 0;"></div>
+        <div class="panel-title">Deleted orders</div>
+        <div class="view-desc" style="margin-bottom:10px;">Orders a doctor deleted — usually to replace with a new one — kept here for your records.</div>
+        <div id="admin-deleted-orders-list"></div>
       </div>
 
       <!-- ===== ADMIN: Ledger & Payouts ===== -->
@@ -541,6 +546,14 @@ function kitsArr(){ return Object.entries(DB.kits).map(([id,k])=>({id,...k})); }
 function doctorsArr(){ return Object.entries(DB.doctors).map(([id,d])=>({id,...d})); }
 function ordersArr(){ return Object.entries(DB.orders).map(([id,o])=>({id,...o})); }
 function payoutsArr(){ return Object.entries(DB.payouts).map(([id,p])=>({id,...p})); }
+// Orders are auto-confirmed the moment they're placed (no admin confirmation
+// step anymore) — the only "not yet final" states left are a staff order
+// still waiting on the doctor's own approval, or one flagged for stock
+// review. Everything else (including any older 'pending' orders from before
+// this change) counts as confirmed. Deleted orders are kept in the database
+// (soft-deleted) so Admin can still see them, but are filtered out of every
+// active list/total via o.deleted.
+function isOrderConfirmed(o){ return o.status !== 'needs_review' && o.status !== 'awaiting_doctor_approval'; }
 
 /* ============================================================
    CRYPTO HELPERS
@@ -972,23 +985,28 @@ function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date
    ADMIN: DASHBOARD
 ============================================================ */
 function renderAdminDashboard(){
-  const orders = ordersArr();
+  // Orders are auto-confirmed on placement, so there's nothing here waiting
+  // on Admin's action anymore — the totals just exclude deleted orders, and
+  // the panel below gives a quick glance at anything a doctor deleted
+  // recently (their way of replacing an order with a new one).
+  const orders = ordersArr().filter(o=>!o.deleted);
   const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
   const totalIncentive = orders.reduce((s,o)=>s+orderIncentive(o),0);
   const totalDue = orders.reduce((s,o)=>s+(orderDiscounted(o)-orderPaid(o)),0);
-  const pending = orders.filter(o=>o.status==='pending');
+  const recentlyDeleted = ordersArr().filter(o=>o.deleted).sort((a,b)=> ((a.deletedAt||'')<(b.deletedAt||'')?1:-1)).slice(0,5);
   document.getElementById('admin-stats').innerHTML = `
     <div class="stat-card"><div class="label">Doctors</div><div class="value">${doctorsArr().length}</div></div>
     <div class="stat-card"><div class="label">Total orders</div><div class="value">${orders.length}</div></div>
     <div class="stat-card"><div class="label">Total MRP billed</div><div class="value">${money(totalMrp)}</div></div>
     <div class="stat-card"><div class="label">Total incentive</div><div class="value amber">${money(totalIncentive)}</div></div>
     <div class="stat-card"><div class="label">Outstanding dues</div><div class="value ${totalDue>0?'':'sage'}">${money(totalDue)}</div></div>`;
-  document.getElementById('admin-pending-orders').innerHTML = pending.length ? pending.map(o=>{
+  document.getElementById('admin-pending-orders').innerHTML = recentlyDeleted.length ? recentlyDeleted.map(o=>{
     const doc=findDocSafe(o.doctorId);
-    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge pending">Pending</span></div>
-      <div class="manifest-items">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}</div>
-      <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">Review in Orders →</button></div></div>`;
-  }).join('') : `<div class="empty">No orders waiting on confirmation right now.</div>`;
+    const deletedWhen = o.deletedAt ? new Date(o.deletedAt).toLocaleDateString() : '';
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge deleted">Deleted</span></div>
+      <div class="manifest-items">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}${deletedWhen ? ` · deleted ${deletedWhen}` : ''}</div>
+      <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">View in Orders →</button></div></div>`;
+  }).join('') : `<div class="empty">No deleted orders recently.</div>`;
 }
 
 /* ============================================================
@@ -1566,7 +1584,7 @@ async function saveDoctorMeta(id){
 }
 async function deleteDoctor(id){
   const d = findDoc(id);
-  const orderCount = ordersArr().filter(o=>o.doctorId===id).length;
+  const orderCount = ordersArr().filter(o=>o.doctorId===id && !o.deleted).length;
   const orderWarning = orderCount ? `\n\nThis doctor has ${orderCount} order${orderCount===1?'':'s'} on record. Those orders will stay in Orders/Ledger but will show as "Unknown doctor (deleted)".` : '';
   if(!confirm(`Delete "${d ? d.name : id}" and all 3 of their logins (Doctor, Technician, Helper)? This cannot be undone.${orderWarning}`)) return;
   try{
@@ -1580,22 +1598,22 @@ async function deleteDoctor(id){
    ADMIN: ORDERS
 ============================================================ */
 function orderStatusLabel(o){
-  if(o.status === 'confirmed') return 'confirmed';
   if(o.status === 'needs_review') return 'needs doctor review';
   if(o.status === 'awaiting_doctor_approval') return "awaiting doctor's approval";
-  return 'pending';
+  return 'confirmed';
 }
 function orderStatusBadgeClass(o){
-  if(o.status === 'confirmed') return 'confirmed';
   if(o.status === 'needs_review') return 'partial';
   if(o.status === 'awaiting_doctor_approval') return 'pending';
-  return 'pending';
+  return 'confirmed';
 }
 function renderAdminOrders(){
   // Orders a staff member placed that still need the doctor's own approval
   // shouldn't be visible to Admin at all yet — they only appear here once
-  // approved (status flips to 'pending').
-  const list = ordersArr().filter(o=>o.status !== 'awaiting_doctor_approval').sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+  // the doctor has approved them. Deleted orders (a doctor replacing an
+  // order with a new one) move down to the "Deleted orders" list below
+  // instead of disappearing entirely.
+  const list = ordersArr().filter(o=>o.status !== 'awaiting_doctor_approval' && !o.deleted).sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-orders-list').innerHTML = list.length ? list.map(o=>{
     const doc = findDocSafe(o.doctorId);
     const billPhone = doc.accounts.doctor.phone;
@@ -1604,7 +1622,6 @@ function renderAdminOrders(){
     const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
     const items = orderItems(o);
     const hasUnavailable = items.some(it=>(it.unavailableQty||0) > 0);
-    const locked = o.status === 'confirmed';
     const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
     const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:center;">Unavailable</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:center;">Disc %</th><th style="text-align:center;">Inc %</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
@@ -1619,14 +1636,14 @@ function renderAdminOrders(){
         const lineIncPct = itemIncentivePct(it, doc);
         const usesOwnRate = p.discountPct !== undefined && p.discountPct !== null;
         return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.autoFlagged ? ` <span style="color:var(--amber-bright); font-size:11px;">(auto-flagged: stock ran short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td style="text-align:center; white-space:nowrap;">
-          ${!locked ? `<input type="number" min="0" max="${qty}" value="${unavailQty}" style="width:56px; text-align:center;" onchange="setItemUnavailableQty('${o.id}',${i},this.value)">` : `<span class="num">${unavailQty}</span>`}
+          <input type="number" min="0" max="${qty}" value="${unavailQty}" style="width:56px; text-align:center;" onchange="setItemUnavailableQty('${o.id}',${i},this.value)">
         </td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:center;" title="${usesOwnRate?'This product has its own rate':'Using doctor default'}">${lineDiscPct}%${usesOwnRate?' •':''}</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
       }).join('')}
       <tr><td colspan="9" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
     <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total${hasUnavailable ? ` · ${items.reduce((s,it)=>s+(it.unavailableQty||0),0)} units unavailable` : ''} · • marks a product with its own discount rate</div>`;
     return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
-      ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable unit(s) and wants to proceed — ready for final confirmation.</div>` : ''}
+      ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable unit(s) and proceeded without them — order confirmed.</div>` : ''}
       ${itemsTable}
       <div class="row" style="margin-top:12px;">
         <div class="stat-card" style="padding:12px;"><div class="label">MRP</div><div class="value" style="font-size:16px;">${money(mrp)}</div></div>
@@ -1648,11 +1665,11 @@ function renderAdminOrders(){
       </div>
       <div class="whatsapp-box">${msg}</div>
       <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
-        ${!locked ? `<button class="btn btn-sage btn-sm" onclick="confirmOrder('${o.id}')">Mark confirmed</button>` : ''}
-        ${hasUnavailable && !locked ? `<button class="btn btn-outline btn-sm" onclick="notifyDoctorUnavailable('${o.id}')" style="color:var(--amber-bright);">Notify doctor of unavailable unit(s)</button>` : ''}
+        ${hasUnavailable ? `<button class="btn btn-outline btn-sm" onclick="notifyDoctorUnavailable('${o.id}')" style="color:var(--amber-bright);">Notify doctor of unavailable unit(s)</button>` : ''}
         ${waLink ? `<a class="btn btn-sm" href="${waLink}" target="_blank">Send on WhatsApp</a>` : ''}
       </div></div>`;
   }).join('') : `<div class="empty">No orders yet.</div>`;
+  renderAdminDeletedOrders();
 }
 // Admin can adjust how many units of a line item are unavailable — this is
 // the same field the system sets automatically when stock runs short at
@@ -1715,12 +1732,21 @@ async function resetOrderDiscount(orderId){
     alert('Could not reset the discount: ' + err.message);
   }
 }
-async function confirmOrder(id){
-  const o = ordersArr().find(x=>x.id===id);
-  if(o && o.status === 'needs_review' && !o.doctorAcknowledgedUnavailable){
-    if(!confirm("The doctor hasn't acknowledged the unavailable unit(s) on this order yet. Confirm anyway?")) return;
-  }
-  await db.ref('orders/'+id+'/status').set('confirmed');
+// Orders are auto-confirmed on placement now, so there's no manual "confirm"
+// step left for Admin — this just lists orders a doctor has deleted (their
+// way of replacing an order with a new one) so the history isn't lost.
+function renderAdminDeletedOrders(){
+  const el = document.getElementById('admin-deleted-orders-list');
+  if(!el) return;
+  const list = ordersArr().filter(o=>o.deleted).sort((a,b)=> ((a.deletedAt||'')<(b.deletedAt||'')?1:-1));
+  el.innerHTML = list.length ? list.map(o=>{
+    const doc = findDocSafe(o.doctorId);
+    const items = orderItems(o);
+    const mrp = orderMrpTotal(o);
+    const deletedWhen = o.deletedAt ? new Date(o.deletedAt).toLocaleString() : 'unknown time';
+    return `<div class="manifest" style="opacity:0.65;"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge deleted">Deleted</span></div>
+      <div class="manifest-items">${items.length} product${items.length===1?'':'s'} · MRP ${money(mrp)} · deleted ${deletedWhen}${o.deletedByAccount ? ` by ${escapeAttr(o.deletedByAccount)}` : ''}</div></div>`;
+  }).join('') : `<div class="empty">No deleted orders.</div>`;
 }
 
 /* ============================================================
@@ -1728,7 +1754,7 @@ async function confirmOrder(id){
 ============================================================ */
 let payoutDraft = {};
 function renderAdminLedger(){
-  const list = ordersArr().sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+  const list = ordersArr().filter(o=>!o.deleted).sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
   document.getElementById('admin-ledger-list').innerHTML = list.length ? list.map(o=>{
     const doc=findDocSafe(o.doctorId);
     const disc=orderDiscounted(o), inc=orderIncentive(o), paid=orderPaid(o), balance=disc-paid;
@@ -1847,7 +1873,9 @@ async function payIncentive(orderId){
 /* ============================================================
    DOCTOR: DASHBOARD
 ============================================================ */
-function myOrders(){ return ordersArr().filter(o=>o.doctorId===SESSION.doctorId); }
+// Deleted orders (a doctor replacing an order with a new one) drop out of
+// the doctor's own view entirely — Admin can still see them separately.
+function myOrders(){ return ordersArr().filter(o=>o.doctorId===SESSION.doctorId && !o.deleted); }
 function renderDocDashboard(){
   const doc = findDoc(SESSION.doctorId);
   if(!doc){ alert('This account has been removed by the Sante team.'); logout(); return; }
@@ -1866,7 +1894,7 @@ function renderDocDashboard(){
 }
 function orderCardHtml(o){
   const disc=orderDiscounted(o), paid=orderPaid(o), balance=disc-paid;
-  const isConfirmed = o.status === 'confirmed';
+  const isConfirmed = isOrderConfirmed(o);
   const needsReview = o.status === 'needs_review';
   const awaitingApproval = o.status === 'awaiting_doctor_approval';
   const isDoctorLogin = SESSION && SESSION.accountKey === 'doctor';
@@ -1935,12 +1963,18 @@ function orderCardHtml(o){
     ${!isConfirmed && !needsReview && !awaitingApproval ? `<div style="margin-top:10px; display:flex; gap:8px;">
       <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit</button>
       <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>
-    </div>` : isConfirmed ? `<div class="hint" style="margin:10px 0 0; font-size:11px;">This order is confirmed and locked — contact the Sante team for any changes.</div>` : ''}
+    </div>` : isConfirmed ? `<div style="margin-top:10px;">
+      <div class="hint" style="font-size:11px; margin-bottom:6px;">This order is confirmed — it can no longer be edited. To change it, delete it and place a new order.</div>
+      <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete this order</button>
+    </div>` : ''}
     </div>`;
 }
 async function approveStaffOrder(orderId){
+  // The doctor approving a staff order is the only gate left — once
+  // approved it's placed for real, same as any order the doctor places
+  // themself. No separate admin confirmation step follows.
   try{
-    await db.ref('orders/'+orderId+'/status').set('pending');
+    await db.ref('orders/'+orderId+'/status').set('confirmed');
   }catch(err){
     alert('Could not approve: ' + err.message);
   }
@@ -1948,21 +1982,21 @@ async function approveStaffOrder(orderId){
 async function rejectStaffOrder(orderId){
   const o = myOrders().find(x=>x.id===orderId);
   if(!o) return;
-  if(!confirm('Reject this order? It will be deleted and any reserved stock returned to inventory. This cannot be undone.')) return;
+  if(!confirm('Reject this order? Any reserved stock will be returned to inventory. This cannot be undone.')) return;
   try{
     for(const it of orderItems(o)){
       const reserved = (it.qty||1) - (it.unavailableQty||0);
       await releaseStock(it.code, reserved);
     }
-    await db.ref('orders/'+orderId).remove();
+    await db.ref('orders/'+orderId).update({ deleted:true, deletedAt:new Date().toISOString(), deletedByAccount:SESSION.accountLabel });
   }catch(err){
     alert('Could not reject: ' + err.message);
   }
 }
 async function acknowledgeUnavailable(orderId){
-  if(!confirm("Proceed with this order without the unavailable unit(s)? It'll go back to the Sante team for final confirmation.")) return;
+  if(!confirm("Proceed with this order without the unavailable unit(s)? It'll be finalized right away.")) return;
   try{
-    await db.ref('orders/'+orderId).update({ status:'pending', doctorAcknowledgedUnavailable:true });
+    await db.ref('orders/'+orderId).update({ status:'confirmed', doctorAcknowledgedUnavailable:true });
   }catch(err){
     alert('Could not update: ' + err.message);
   }
@@ -2121,8 +2155,8 @@ async function placeOrder(){
   let existingOrder = null;
   if(editingOrderId){
     existingOrder = myOrders().find(x=>x.id===editingOrderId);
-    if(!existingOrder || existingOrder.status === 'confirmed'){
-      alert('This order can no longer be edited — it has already been confirmed.');
+    if(!existingOrder || isOrderConfirmed(existingOrder)){
+      alert('This order can no longer be edited — it has already been confirmed. Delete it and place a new order instead.');
       editingOrderId = null;
       showView('doc-orders');
       return;
@@ -2159,11 +2193,11 @@ async function placeOrder(){
   if(existingOrder){
     const updatePayload = { items, productCodes:null, date, time };
     if(existingOrder.status === 'needs_review'){
-      Object.assign(updatePayload, { status:'pending', doctorAcknowledgedUnavailable:true });
+      Object.assign(updatePayload, { status:'confirmed', doctorAcknowledgedUnavailable:true });
     } else if(existingOrder.status === 'awaiting_doctor_approval' && SESSION.accountKey === 'doctor'){
       // The doctor editing their own staff's order counts as approving it
-      // (with whatever changes they just made) — it can now go to Admin.
-      updatePayload.status = 'pending';
+      // (with whatever changes they just made) — it's placed for real now.
+      updatePayload.status = 'confirmed';
     }
     try{
       await db.ref('orders/'+editingOrderId).update(updatePayload);
@@ -2179,30 +2213,32 @@ async function placeOrder(){
 
   // A staff-placed (non-"doctor" account) order goes to the doctor for
   // approval first when that doctor has the review toggle on — Admin
-  // doesn't see it at all until the doctor approves it. The doctor's own
-  // login always skips this, since they ARE the approver.
+  // doesn't see it at all until the doctor approves it. Once approved (or
+  // when no review is required, or the doctor placed it themself) the
+  // order is placed for real straight away, same as ordering online — no
+  // separate admin confirmation step.
   const doctorRecord = findDoc(SESSION.doctorId);
   const needsApproval = SESSION.accountKey !== 'doctor' && !!(doctorRecord && doctorRecord.requireDoctorReview);
   await db.ref('orders/' + uid('ord')).set({
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
     items,
-    date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'pending', createdAt: new Date().toISOString()
+    date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'confirmed', createdAt: new Date().toISOString()
   });
   if(needsApproval){
     const doctorPhone = doctorRecord.accounts.doctor && doctorRecord.accounts.doctor.phone;
     const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order that needs your review before it's sent to Sante Life Science.\nPlease open the Kit Desk app to approve, edit, or reject it.\n— Sante Life Science`;
     if(doctorPhone) window.open(`https://wa.me/${doctorPhone}?text=${encodeURIComponent(msg)}`, '_blank');
-    alert("Order submitted for the doctor's approval. They'll need to review it before it reaches the Sante team.");
+    alert("Order submitted for the doctor's approval. They'll need to review it before it's placed.");
   } else {
-    alert('Order placed. The Sante team has been notified and will confirm your booking shortly.');
+    alert('Order placed and confirmed. The Sante team has been notified.');
   }
   showView('doc-orders');
 }
 function editOrder(id){
   const o = myOrders().find(x=>x.id===id);
   if(!o) return;
-  if(o.status === 'confirmed'){ alert('This order has already been confirmed and can no longer be edited.'); return; }
+  if(isOrderConfirmed(o)){ alert('This order has already been confirmed and can no longer be edited. Delete it and place a new order instead.'); return; }
   editingOrderId = id;
   showView('doc-neworder');
 }
@@ -2210,18 +2246,24 @@ function cancelEditOrder(){
   editingOrderId = null;
   showView('doc-neworder');
 }
+// A confirmed order can no longer be edited — this is now how a doctor (or
+// staff member) "modifies" an order instead: delete it and place a new one
+// with the changes. The order isn't actually erased — it's marked deleted
+// so it drops out of the doctor's own list, but Admin can still see it.
 async function deleteMyOrder(id){
   const o = myOrders().find(x=>x.id===id);
   if(!o) return;
-  if(o.status === 'confirmed'){ alert('This order has already been confirmed and can no longer be deleted.'); return; }
-  if(!confirm('Delete this order? This cannot be undone.')) return;
+  const msg = isOrderConfirmed(o)
+    ? 'Delete this confirmed order? Its reserved stock will be released. The Sante team will still be able to see it as a deleted order — place a new order afterward with your changes.'
+    : 'Delete this order? This cannot be undone.';
+  if(!confirm(msg)) return;
   try{
     // Give back whatever stock this order was holding before removing it.
     for(const it of orderItems(o)){
       const reserved = (it.qty||1) - (it.unavailableQty||0);
       await releaseStock(it.code, reserved);
     }
-    await db.ref('orders/'+id).remove();
+    await db.ref('orders/'+id).update({ deleted:true, deletedAt:new Date().toISOString(), deletedByAccount:SESSION.accountLabel });
   }catch(err){
     alert('Could not delete: ' + err.message);
   }
@@ -2261,7 +2303,7 @@ function renderDocLedger(){
 ============================================================ */
 function buildDoctorReportData(doctorId){
   const doc = findDocSafe(doctorId);
-  const orders = ordersArr().filter(o=>o.doctorId===doctorId).sort((a,b)=> a.date<b.date?1:-1);
+  const orders = ordersArr().filter(o=>o.doctorId===doctorId && !o.deleted).sort((a,b)=> a.date<b.date?1:-1);
   const rows = orders.map(o=>{
     const mrp=orderMrpTotal(o), disc=orderDiscounted(o), paid=orderPaid(o), inc=orderIncentive(o);
     const incPaid = payoutsArr().filter(p=>p.orderId===o.id).reduce((s,p)=>s+p.payees.reduce((s2,x)=>s2+x.amount,0),0);
