@@ -980,6 +980,13 @@ function orderDiscounted(o){ return orderMrpTotal(o) - orderDiscountAmount(o); }
 function orderPaid(o){ return Math.round(Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0)); }
 function paymentsArr(o){ return Object.entries(o.payments||{}).map(([id,p])=>({id,...p})).sort((a,b)=> a.date<b.date?1:-1); }
 function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date); d.setDate(d.getDate()+(doc?.dueDays||30)); return d.toISOString().slice(0,10); }
+// A doctor can only delete/cancel their own order up to 3 hours before the
+// scheduled operation date/time — after that the delete option is locked out.
+const ORDER_DELETE_LOCKOUT_HOURS = 3;
+function orderDateTime(o){ return new Date(`${o.date}T${o.time||'00:00'}`); }
+function orderDeleteCutoff(o){ return new Date(orderDateTime(o).getTime() - ORDER_DELETE_LOCKOUT_HOURS*60*60*1000); }
+function canDeleteOrder(o){ return Date.now() < orderDeleteCutoff(o).getTime(); }
+function fmtCutoff(o){ return orderDeleteCutoff(o).toLocaleString('en-IN', {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'}); }
 
 /* ============================================================
    ADMIN: DASHBOARD
@@ -1932,7 +1939,7 @@ function orderCardHtml(o){
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn btn-sm" onclick="acknowledgeUnavailable('${o.id}')">Proceed without these</button>
         <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit order</button>
-        <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>
+        ${canDeleteOrder(o) ? `<button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>` : `<button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="Cancel window closed ${fmtCutoff(o)}">Cancel this order</button>`}
       </div>
     </div>` : '';
   const approvalBanner = awaitingApproval ? (
@@ -1945,7 +1952,7 @@ function orderCardHtml(o){
         </div>
       </div>` : `<div style="border:1px solid var(--line); padding:10px; margin:10px 0; font-size:12px; color:var(--amber-bright);">
         Waiting for ${escapeAttr(doc?.name||'the doctor')} to review and approve this order before it's sent to the Sante team.
-        <div style="margin-top:8px;"><button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button></div>
+        <div style="margin-top:8px;">${canDeleteOrder(o) ? `<button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>` : `<button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="Cancel window closed ${fmtCutoff(o)}">Cancel this order</button>`}</div>
       </div>`
   ) : '';
   return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
@@ -1962,12 +1969,12 @@ function orderCardHtml(o){
       <div class="stat-card" style="padding:10px;"><div class="label">Incentive</div><div class="value sage" style="font-size:14px;">${money(orderIncentive(o))}</div></div>
       <div class="stat-card" style="padding:10px;"><div class="label">Balance</div><div class="value" style="font-size:14px;">${money(balance)}</div></div>
     </div>
-    ${!isConfirmed && !needsReview && !awaitingApproval ? `<div style="margin-top:10px; display:flex; gap:8px;">
+    ${!isConfirmed && !needsReview && !awaitingApproval ? `<div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <button class="btn btn-outline btn-sm" onclick="editOrder('${o.id}')">Edit</button>
-      <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>
+      ${canDeleteOrder(o) ? `<button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete</button>` : `<button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:not-allowed;">Delete</button><span class="hint" style="font-size:11px;">Locked since ${fmtCutoff(o)}</span>`}
     </div>` : isConfirmed ? `<div style="margin-top:10px;">
       <div class="hint" style="font-size:11px; margin-bottom:6px;">This order is confirmed — it can no longer be edited. To change it, delete it and place a new order.</div>
-      <button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete this order</button>
+      ${canDeleteOrder(o) ? `<button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Delete this order</button><div class="hint" style="font-size:11px; margin-top:6px;">Delete available until ${fmtCutoff(o)} (3 hours before the scheduled time).</div>` : `<button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:not-allowed;">Delete this order</button><div class="hint" style="font-size:11px; margin-top:6px; color:var(--rust);">Delete window closed ${fmtCutoff(o)}. Contact the Sante team for changes.</div>`}
     </div>` : ''}
     </div>`;
 }
@@ -2255,6 +2262,10 @@ function cancelEditOrder(){
 async function deleteMyOrder(id){
   const o = myOrders().find(x=>x.id===id);
   if(!o) return;
+  if(!canDeleteOrder(o)){
+    alert(`This order can no longer be deleted — the delete window closed on ${fmtCutoff(o)} (3 hours before the scheduled time). Please contact the Sante team if you need changes.`);
+    return;
+  }
   const msg = isOrderConfirmed(o)
     ? 'Delete this confirmed order? Its reserved stock will be released. The Sante team will still be able to see it as a deleted order — place a new order afterward with your changes.'
     : 'Delete this order? This cannot be undone.';
