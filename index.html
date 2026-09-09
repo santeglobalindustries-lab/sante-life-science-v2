@@ -1882,11 +1882,13 @@ function renderDocDashboard(){
   document.getElementById('doc-dash-title').textContent = `Welcome, ${doc.name}`;
   const orders = myOrders();
   const totalMrp = orders.reduce((s,o)=>s+orderMrpTotal(o),0);
+  const totalBilled = orders.reduce((s,o)=>s+orderDiscounted(o),0);
   const totalInc = orders.reduce((s,o)=>s+orderIncentive(o),0);
   const totalDue = orders.reduce((s,o)=>s+(orderDiscounted(o)-orderPaid(o)),0);
   document.getElementById('doc-stats').innerHTML = `
     <div class="stat-card"><div class="label">Total orders</div><div class="value">${orders.length}</div></div>
     <div class="stat-card"><div class="label">Total MRP</div><div class="value">${money(totalMrp)}</div></div>
+    <div class="stat-card"><div class="label">Total Billed</div><div class="value">${money(totalBilled)}</div></div>
     <div class="stat-card"><div class="label">Total incentive earned</div><div class="value amber">${money(totalInc)}</div></div>
     <div class="stat-card"><div class="label">Outstanding balance</div><div class="value" style="color:${totalDue>0?'var(--rust)':'var(--sage)'}">${money(totalDue)}</div></div>`;
   const recent = [...orders].sort((a,b)=>a.createdAt<b.createdAt?1:-1).slice(0,3);
