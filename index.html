@@ -1760,9 +1760,8 @@ function renderAdminDeletedOrders(){
    ADMIN: LEDGER & PAYOUTS
 ============================================================ */
 let payoutDraft = {};
-function renderAdminLedger(){
-  const list = ordersArr().filter(o=>!o.deleted).sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
-  document.getElementById('admin-ledger-list').innerHTML = list.length ? list.map(o=>{
+let bulkPaymentDraft = {};
+function ledgerOrderCardHtml(o){
     const doc=findDocSafe(o.doctorId);
     const disc=orderDiscounted(o), inc=orderIncentive(o), paid=orderPaid(o), balance=disc-paid;
     const paidStatus = balance<=0 ? 'paid' : (paid>0 ? 'partial':'due');
@@ -1781,14 +1780,17 @@ function renderAdminLedger(){
       ${payments.length ? `<div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Payment history</div>
       <div class="payment-history">
-        ${payments.map(p=>`<div class="payment-row" style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:13px;">
-          <span>${p.date} · ${money(p.amount)}</span>
-          <button class="btn btn-outline btn-sm" onclick="deletePayment('${o.id}','${p.id}')" style="color:var(--rust);">Remove</button>
+        ${payments.map(p=>`<div class="payment-row" style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:13px; flex-wrap:wrap; gap:6px;">
+          <span>${p.date} · ${money(p.amount)}${p.note?` · ${escapeAttr(p.note)}`:''}${p.batchId && p.batchOrderCount>1?` · part of a ${money(p.batchTotal)} payment across ${p.batchOrderCount} orders`:''}${p.whatsappSentAt?` · <span style="color:var(--sage)">✓ receipt sent</span>`:''}</span>
+          <div style="display:flex; gap:6px;">
+            <button class="btn btn-outline btn-sm" onclick="sendPaymentReceiptWhatsApp('${o.id}','${p.id}')">${p.whatsappSentAt?'Resend receipt':'Send WhatsApp receipt'}</button>
+            <button class="btn btn-outline btn-sm" onclick="deletePayment('${o.id}','${p.id}')" style="color:var(--rust);">Remove</button>
+          </div>
         </div>`).join('')}
       </div>` : ''}
       <div class="divider"></div>
-      <div class="panel-title" style="font-size:15px;">Record a payment</div>
-      <div class="hint" style="margin:0 0 6px;">Balance due right now: <b style="color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</b></div>
+      <div class="panel-title" style="font-size:15px;">Record a payment on this order</div>
+      <div class="hint" style="margin:0 0 6px;">Balance due right now: <b style="color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</b> · use this only when a payment is specifically tied to this one order — for a lump sum covering several of this doctor's orders, use "Record a payment" for the doctor above instead.</div>
       <div class="row"><div><input type="number" placeholder="Amount received (₹)" id="pay-amt-${o.id}"></div><div><button class="btn btn-sm" onclick="recordPayment('${o.id}')">Record + WhatsApp receipt</button></div></div>
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Incentive payout split</div>
@@ -1810,7 +1812,125 @@ function renderAdminLedger(){
         <button class="btn btn-outline btn-sm" onclick="addPayoutRow('${o.id}')">+ Add payee</button>
         <button class="btn btn-sm" onclick="payIncentive('${o.id}')">Mark incentive paid + WhatsApp</button>
       </div></div>`;
+}
+function bulkPaymentBoxHtml(doctorId, doc, totalOutstanding){
+  const draft = bulkPaymentDraft[doctorId];
+  if(!draft){
+    return `<div class="panel-title" style="font-size:15px;">Record a payment for ${escapeAttr(doc.name)}</div>
+      <div class="hint" style="margin:0 0 6px;">Total outstanding across all of this doctor's orders: <b style="color:${totalOutstanding>0?'var(--rust)':'var(--sage)'}">${money(totalOutstanding)}</b></div>
+      <div class="row">
+        <div><input type="number" placeholder="Amount received (₹)" id="bulk-amt-${doctorId}"></div>
+        <div><input type="text" placeholder="Reference / note (optional) — e.g. NEFT ref 1234" id="bulk-note-${doctorId}"></div>
+        <div><button class="btn btn-sm" onclick="previewBulkPayment('${doctorId}')" ${totalOutstanding<=0?'disabled':''}>Preview allocation</button></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">This applies one lump sum to this doctor's oldest unpaid order first, then the next, until the amount is used up. Nothing is recorded until you confirm the preview.</div>`;
+  }
+  return `<div class="panel-title" style="font-size:15px;">Record a payment for ${escapeAttr(doc.name)}</div>
+    <div class="hint" style="margin:0 0 6px;">Applying ${money(draft.amount)}${draft.note?` (${escapeAttr(draft.note)})`:''} — oldest order first, nothing saved yet:</div>
+    <div class="payment-history" style="margin-bottom:10px;">
+      ${draft.rows.map(r=>`<div class="payment-row" style="display:flex; justify-content:space-between; padding:5px 0; font-size:13px;">
+        <span>${r.date} · balance ${money(r.balanceBefore)} → applying ${money(r.applied)} → new balance ${money(r.balanceAfter)}</span>
+      </div>`).join('')}
+    </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn btn-sm" onclick="recordBulkPayment('${doctorId}')">Confirm & record payment</button>
+      <button class="btn btn-outline btn-sm" onclick="cancelBulkPreview('${doctorId}')">Cancel</button>
+    </div>
+    <div class="hint" style="margin-top:6px;">This only records the money against each order — it does not send WhatsApp messages. Send each receipt separately from that order's payment history below.</div>`;
+}
+function renderAdminLedger(){
+  const allOrders = ordersArr().filter(o=>!o.deleted);
+  const byDoctor = {};
+  allOrders.forEach(o=>{ (byDoctor[o.doctorId] = byDoctor[o.doctorId]||[]).push(o); });
+  const groups = Object.keys(byDoctor).map(doctorId=>{
+    const doc = findDocSafe(doctorId);
+    const orders = byDoctor[doctorId].sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
+    const totalBilled = orders.reduce((s,o)=>s+orderDiscounted(o),0);
+    const totalPaid = orders.reduce((s,o)=>s+orderPaid(o),0);
+    return {doctorId, doc, orders, totalBilled, totalPaid, totalOutstanding: totalBilled-totalPaid};
+  }).sort((a,b)=> b.totalOutstanding - a.totalOutstanding || a.doc.name.localeCompare(b.doc.name));
+
+  document.getElementById('admin-ledger-list').innerHTML = groups.length ? groups.map(g=>{
+    return `<div style="border:1px solid var(--line); background:var(--bg2); padding:20px; margin-bottom:24px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <span style="font-family:'Cormorant Garamond',serif; font-size:21px; color:var(--cream);">${escapeAttr(g.doc.name)}</span>
+        <span class="kit-code" style="font-size:10px; letter-spacing:0.1em; color:var(--cream-faint); text-transform:uppercase;">${g.orders.length} order${g.orders.length===1?'':'s'}</span>
+      </div>
+      <div class="row">
+        <div class="stat-card" style="padding:12px;"><div class="label">Total billed</div><div class="value" style="font-size:15px;">${money(g.totalBilled)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Total paid</div><div class="value sage" style="font-size:15px;">${money(g.totalPaid)}</div></div>
+        <div class="stat-card" style="padding:12px;"><div class="label">Outstanding</div><div class="value" style="font-size:15px; color:${g.totalOutstanding>0?'var(--rust)':'var(--sage)'}">${money(g.totalOutstanding)}</div></div>
+      </div>
+      <div class="divider"></div>
+      ${bulkPaymentBoxHtml(g.doctorId, g.doc, g.totalOutstanding)}
+      <div class="divider"></div>
+      ${g.orders.map(ledgerOrderCardHtml).join('')}
+    </div>`;
   }).join('') : `<div class="empty">No orders to settle yet.</div>`;
+}
+function previewBulkPayment(doctorId){
+  const amtInput = document.getElementById(`bulk-amt-${doctorId}`);
+  const noteInput = document.getElementById(`bulk-note-${doctorId}`);
+  const amount = Math.round(parseFloat(amtInput ? amtInput.value : ''));
+  if(!amount || amount<=0){ alert('Enter a valid amount first.'); return; }
+  const note = (noteInput && noteInput.value || '').trim();
+  const candidates = ordersArr().filter(o=>o.doctorId===doctorId && !o.deleted)
+    .map(o=>({o, balance: orderDiscounted(o)-orderPaid(o)}))
+    .filter(x=>x.balance>0)
+    .sort((a,b)=> (a.o.date+(a.o.time||'')) < (b.o.date+(b.o.time||'')) ? -1 : 1);
+  const totalOutstanding = candidates.reduce((s,x)=>s+x.balance,0);
+  if(amount > totalOutstanding){
+    alert(`This doctor's total outstanding across all orders is ${money(totalOutstanding)}. You entered ${money(amount)}, which is more than that.\n\nReduce the amount, or if you specifically mean to overpay one order, use that order's own "Record a payment on this order" box instead.`);
+    return;
+  }
+  let remaining = amount;
+  const rows = [];
+  for(const {o,balance} of candidates){
+    if(remaining<=0) break;
+    const applied = Math.min(remaining, balance);
+    rows.push({orderId:o.id, date:o.date, balanceBefore:balance, applied, balanceAfter:balance-applied});
+    remaining -= applied;
+  }
+  bulkPaymentDraft[doctorId] = {amount, note, rows};
+  renderAdminLedger();
+}
+function cancelBulkPreview(doctorId){ delete bulkPaymentDraft[doctorId]; renderAdminLedger(); }
+async function recordBulkPayment(doctorId){
+  const draft = bulkPaymentDraft[doctorId];
+  if(!draft || !draft.rows.length) return;
+  const batchId = uid('batch');
+  const dateStr = new Date().toISOString().slice(0,10);
+  const updates = {};
+  draft.rows.forEach(row=>{
+    const paymentId = uid('pay');
+    const entry = { amount: row.applied, date: dateStr, batchId, batchTotal: draft.amount, batchOrderCount: draft.rows.length };
+    if(draft.note) entry.note = draft.note;
+    updates[`orders/${row.orderId}/payments/${paymentId}`] = entry;
+  });
+  try{
+    await db.ref().update(updates);
+    delete bulkPaymentDraft[doctorId];
+    renderAdminLedger();
+  }catch(err){
+    alert('Could not record payment: ' + err.message);
+  }
+}
+async function sendPaymentReceiptWhatsApp(orderId, paymentId){
+  const o = ordersArr().find(x=>x.id===orderId);
+  if(!o) return;
+  const p = (o.payments||{})[paymentId];
+  if(!p) return;
+  const doc = findDocSafe(o.doctorId);
+  const billPhone = doc.accounts.doctor.phone;
+  const balance = orderDiscounted(o) - orderPaid(o);
+  const balanceLine = balance > 0 ? `Remaining balance on this order: ${money(balance)}`
+    : balance < 0 ? `This order is now overpaid by ${money(-balance)} — we'll be in touch about a refund/credit.`
+    : `This order is now fully paid.`;
+  const batchLine = (p.batchId && p.batchOrderCount>1) ? `\n(Part of your payment of ${money(p.batchTotal)}, applied across ${p.batchOrderCount} of your orders.)` : '';
+  const msg = `Hello ${doc.name}, we've received your payment of ${money(p.amount)} against your ${o.date} order.${batchLine}\n${balanceLine}\n— Sante Life Science`;
+  if(!billPhone){ alert('No phone on file for this doctor, so no WhatsApp receipt can be sent.'); return; }
+  window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  try{ await db.ref(`orders/${orderId}/payments/${paymentId}/whatsappSentAt`).set(new Date().toISOString()); }catch(err){ /* non-critical */ }
 }
 async function deletePayout(payoutId){
   if(!confirm('Remove this incentive payout record? Use this to undo a duplicate or mistaken entry. This cannot be undone.')) return;
@@ -1834,6 +1954,7 @@ function updatePayoutDraft(orderId, idx, field, val){ payoutDraft[orderId][idx][
 
 async function recordPayment(orderId){
   const amt = Math.round(parseFloat(document.getElementById(`pay-amt-${orderId}`).value));
+
   if(!amt || amt<=0) return;
   const o = ordersArr().find(x=>x.id===orderId);
   const currentBalance = orderDiscounted(o) - orderPaid(o);
