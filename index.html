@@ -441,8 +441,8 @@
         <div class="panel">
           <div class="panel-title">3. Date &amp; time</div>
           <div class="row">
-            <div><label class="small">Date</label><input type="date" id="order-date"></div>
-            <div><label class="small">Time</label><input type="time" id="order-time"></div>
+            <div><label class="small">Delivery date <span style="font-weight:400; color:var(--cream-faint);">— when you need this</span></label><input type="date" id="order-date"></div>
+            <div><label class="small">Delivery time</label><input type="time" id="order-time"></div>
           </div>
         </div>
         <div style="display:flex; gap:10px;">
@@ -980,6 +980,26 @@ function orderDiscounted(o){ return orderMrpTotal(o) - orderDiscountAmount(o); }
 function orderPaid(o){ return Math.round(Object.values(o.payments||{}).reduce((s,p)=>s+p.amount,0)); }
 function paymentsArr(o){ return Object.entries(o.payments||{}).map(([id,p])=>({id,...p})).sort((a,b)=> a.date<b.date?1:-1); }
 function orderDueDate(o){ const doc=findDoc(o.doctorId); const d=new Date(o.date); d.setDate(d.getDate()+(doc?.dueDays||30)); return d.toISOString().slice(0,10); }
+// Human-readable Order ID, e.g. SLS-20260910-003 — generated once at
+// placement from an atomic per-day counter (a Firebase transaction, same
+// pattern as reserveStock, so two orders placed the same second never
+// collide) and stored on the order permanently. Orders placed before this
+// feature existed won't have one — orderIdDisplay() falls back to the
+// internal id for those so nothing breaks or shows blank.
+async function nextOrderSeqForDate(dateStr){
+  const ref = db.ref(`orderSeq/${dateStr}`);
+  let seq = 1;
+  await ref.transaction(current => { seq = (current||0) + 1; return seq; });
+  return seq;
+}
+async function generateOrderId(placedAt){
+  const dateStr = placedAt.toISOString().slice(0,10).replace(/-/g,'');
+  const seq = await nextOrderSeqForDate(dateStr);
+  return `SLS-${dateStr}-${String(seq).padStart(3,'0')}`;
+}
+function orderIdDisplay(o){ return o.orderId || o.id; }
+function placedDateDisplay(o){ return o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—'; }
+function deliveryDateDisplay(o){ return `${o.date}${o.time?' '+o.time:''}`; }
 // A doctor can only delete/cancel their own order up to 3 hours before the
 // scheduled operation date/time — after that the delete option is locked out.
 const ORDER_DELETE_LOCKOUT_HOURS = 3;
@@ -1010,8 +1030,8 @@ function renderAdminDashboard(){
   document.getElementById('admin-pending-orders').innerHTML = recentlyDeleted.length ? recentlyDeleted.map(o=>{
     const doc=findDocSafe(o.doctorId);
     const deletedWhen = o.deletedAt ? new Date(o.deletedAt).toLocaleDateString() : '';
-    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span></div><span class="badge deleted">Deleted</span></div>
-      <div class="manifest-items">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · ${o.date} ${o.time} · MRP ${money(orderMrpTotal(o))}${deletedWhen ? ` · deleted ${deletedWhen}` : ''}</div>
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${orderIdDisplay(o)}</span></div><span class="badge deleted">Deleted</span></div>
+      <div class="manifest-items">${orderItems(o).length} product${orderItems(o).length===1?'':'s'} · Delivery ${deliveryDateDisplay(o)} · Placed ${placedDateDisplay(o)} · MRP ${money(orderMrpTotal(o))}${deletedWhen ? ` · deleted ${deletedWhen}` : ''}</div>
       <div style="margin-top:10px;"><button class="btn btn-sm" onclick="showView('admin-orders')">View in Orders →</button></div></div>`;
   }).join('') : `<div class="empty">No deleted orders recently.</div>`;
 }
@@ -1629,7 +1649,7 @@ function renderAdminOrders(){
     const isOverridden = o.discountPctOverride !== undefined && o.discountPctOverride !== null;
     const items = orderItems(o);
     const hasUnavailable = items.some(it=>(it.unavailableQty||0) > 0);
-    const msg = `Hello ${doc.name}, your order has been successfully placed.\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
+    const msg = `Hello ${doc.name}, your order ${orderIdDisplay(o)} has been successfully placed.\nPlaced: ${placedDateDisplay(o)}   Delivery: ${deliveryDateDisplay(o)}\nTotal bill (discounted): ${money(disc)}\nMRP: ${money(mrp)}\nYour incentive on this order: ${money(inc)}\nPayment due by: ${orderDueDate(o)}\n— Sante Life Science`;
     const waLink = billPhone ? `https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}` : '';
     const itemsTable = `<div class="item-table-wrap"><table style="margin-top:0;"><thead><tr><th>Sr No</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:center;">Qty</th><th style="text-align:center;">Unavailable</th><th style="text-align:right;">Unit MRP (₹)</th><th style="text-align:center;">Disc %</th><th style="text-align:center;">Inc %</th><th style="text-align:right;">Line Total (₹)</th></tr></thead><tbody>
       ${items.map((it,i)=>{
@@ -1649,7 +1669,7 @@ function renderAdminOrders(){
       <tr><td colspan="9" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
     <div class="view-desc" style="margin-top:4px;">${items.length} product${items.length===1?'':'s'} · ${items.reduce((s,it)=>s+(it.qty||1),0)} units total${hasUnavailable ? ` · ${items.reduce((s,it)=>s+(it.unavailableQty||0),0)} units unavailable` : ''} · • marks a product with its own discount rate</div>`;
-    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${orderIdDisplay(o)} · Delivery ${deliveryDateDisplay(o)} · Placed ${placedDateDisplay(o)} · via ${o.accountLabel||'—'}</span></div><span class="badge ${orderStatusBadgeClass(o)}">${orderStatusLabel(o)}</span></div>
       ${o.doctorAcknowledgedUnavailable ? `<div class="hint" style="color:var(--sage); margin-bottom:8px;">✓ Doctor has acknowledged the unavailable unit(s) and proceeded without them — order confirmed.</div>` : ''}
       ${itemsTable}
       <div class="row" style="margin-top:12px;">
@@ -1751,8 +1771,8 @@ function renderAdminDeletedOrders(){
     const items = orderItems(o);
     const mrp = orderMrpTotal(o);
     const deletedWhen = o.deletedAt ? new Date(o.deletedAt).toLocaleString() : 'unknown time';
-    return `<div class="manifest" style="opacity:0.65;"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date} ${o.time} · via ${o.accountLabel||'—'}</span></div><span class="badge deleted">Deleted</span></div>
-      <div class="manifest-items">${items.length} product${items.length===1?'':'s'} · MRP ${money(mrp)} · deleted ${deletedWhen}${o.deletedByAccount ? ` by ${escapeAttr(o.deletedByAccount)}` : ''}</div></div>`;
+    return `<div class="manifest" style="opacity:0.65;"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${orderIdDisplay(o)} · Delivery ${deliveryDateDisplay(o)} · via ${o.accountLabel||'—'}</span></div><span class="badge deleted">Deleted</span></div>
+      <div class="manifest-items">${items.length} product${items.length===1?'':'s'} · Placed ${placedDateDisplay(o)} · MRP ${money(mrp)} · deleted ${deletedWhen}${o.deletedByAccount ? ` by ${escapeAttr(o.deletedByAccount)}` : ''}</div></div>`;
   }).join('') : `<div class="empty">No deleted orders.</div>`;
 }
 
@@ -1770,7 +1790,7 @@ function ledgerOrderCardHtml(o){
     const incentiveRemaining = inc - incentivePaid;
     const payments = paymentsArr(o);
     if(!payoutDraft[o.id]) payoutDraft[o.id] = [{name:doc.name, amount: Math.max(incentiveRemaining,0)}];
-    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${doc.name}</span> <span class="kit-code">· ${o.date}</span></div><span class="badge ${paidStatus}">${paidStatus}</span></div>
+    return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${orderIdDisplay(o)}</span> <span class="kit-code">· Delivery ${deliveryDateDisplay(o)} · Placed ${placedDateDisplay(o)}</span></div><span class="badge ${paidStatus}">${paidStatus}</span></div>
       <div class="row" style="margin-top:10px;">
         <div class="stat-card" style="padding:12px;"><div class="label">Bill</div><div class="value" style="font-size:15px;">${money(disc)}</div></div>
         <div class="stat-card" style="padding:12px;"><div class="label">Paid</div><div class="value sage" style="font-size:15px;">${money(paid)}</div></div>
@@ -1927,7 +1947,8 @@ async function sendPaymentReceiptWhatsApp(orderId, paymentId){
     : balance < 0 ? `This order is now overpaid by ${money(-balance)} — we'll be in touch about a refund/credit.`
     : `This order is now fully paid.`;
   const batchLine = (p.batchId && p.batchOrderCount>1) ? `\n(Part of your payment of ${money(p.batchTotal)}, applied across ${p.batchOrderCount} of your orders.)` : '';
-  const msg = `Hello ${doc.name}, we've received your payment of ${money(p.amount)} against your ${o.date} order.${batchLine}\n${balanceLine}\n— Sante Life Science`;
+  const paymentDateDisplay = p.date ? new Date(p.date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '';
+  const msg = `Hello ${doc.name}, we've received your payment of ${money(p.amount)}${paymentDateDisplay?` on ${paymentDateDisplay}`:''} against order ${orderIdDisplay(o)} (placed ${placedDateDisplay(o)}, delivery ${deliveryDateDisplay(o)}).${batchLine}\n${balanceLine}\n— Sante Life Science`;
   if(!billPhone){ alert('No phone on file for this doctor, so no WhatsApp receipt can be sent.'); return; }
   window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   try{ await db.ref(`orders/${orderId}/payments/${paymentId}/whatsappSentAt`).set(new Date().toISOString()); }catch(err){ /* non-critical */ }
@@ -1962,7 +1983,8 @@ async function recordPayment(orderId){
     const over = (amt - currentBalance).toFixed(2).replace(/\.00$/,'');
     if(!confirm(`The balance due on this order is only ${money(currentBalance)}. Recording ${money(amt)} would leave this order overpaid by ₹${over}. Continue anyway?`)) return;
   }
-  await db.ref(`orders/${orderId}/payments/${uid('pay')}`).set({ amount:amt, date:new Date().toISOString().slice(0,10) });
+  const paymentDateIso = new Date().toISOString().slice(0,10);
+  await db.ref(`orders/${orderId}/payments/${uid('pay')}`).set({ amount:amt, date:paymentDateIso });
   const doc = findDocSafe(o.doctorId);
   const billPhone = doc.accounts.doctor.phone;
   const newPaid = orderPaid(o)+amt;
@@ -1973,7 +1995,8 @@ async function recordPayment(orderId){
   const balanceLine = balance > 0 ? `Remaining balance on this order: ${money(balance)}`
     : balance < 0 ? `This order is now overpaid by ${money(-balance)} — we'll be in touch about a refund/credit.`
     : `This order is now fully paid.`;
-  const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)}.\n${balanceLine}\n— Sante Life Science`;
+  const paymentDateDisplay = new Date(paymentDateIso).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+  const msg = `Hello ${doc.name}, we've received your payment of ${money(amt)} on ${paymentDateDisplay} against order ${orderIdDisplay(o)} (placed ${placedDateDisplay(o)}, delivery ${deliveryDateDisplay(o)}).\n${balanceLine}\n— Sante Life Science`;
   if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   else alert('Payment recorded. (No phone on file for this doctor, so no WhatsApp receipt was sent.)');
 }
@@ -1990,10 +2013,12 @@ async function payIncentive(orderId){
     const over = total - remaining;
     if(!confirm(`This order's total incentive is ${money(inc)}, and ${money(alreadyPaid)} has already been paid out (${money(remaining)} remaining). Recording ${money(total)} now would pay ${money(over)} more than the order's incentive. Continue anyway?`)) return;
   }
-  await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:new Date().toISOString().slice(0,10) });
+  const payoutDateIso = new Date().toISOString().slice(0,10);
+  await db.ref('payouts/' + uid('payout')).set({ orderId, doctorId:o.doctorId, payees:rows, date:payoutDateIso });
   const breakdown = rows.map(r=>`${money(r.amount)} to ${r.name}`).join(', ');
   const billPhone = doc.accounts.doctor.phone;
-  const msg = `Hello ${doc.name}, an incentive payout of ${money(total)} has been made.\nDetails: ${breakdown}\n— Sante Life Science`;
+  const payoutDateDisplay = new Date(payoutDateIso).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+  const msg = `Hello ${doc.name}, an incentive payout of ${money(total)} has been made on ${payoutDateDisplay} against order ${orderIdDisplay(o)}.\nDetails: ${breakdown}\n— Sante Life Science`;
   if(billPhone) window.open(`https://wa.me/${billPhone}?text=${encodeURIComponent(msg)}`, '_blank');
   delete payoutDraft[orderId];
 }
@@ -2076,7 +2101,7 @@ function orderCardHtml(o){
         <div style="margin-top:8px;">${canDeleteOrder(o) ? `<button class="btn btn-outline btn-sm" onclick="deleteMyOrder('${o.id}')" style="color:var(--rust);">Cancel this order</button>` : `<button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:not-allowed;" title="Cancel window closed ${fmtCutoff(o)}">Cancel this order</button>`}</div>
       </div>`
   ) : '';
-  return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${o.date}</span> <span class="kit-code">· ${o.time}</span></div>
+  return `<div class="manifest"><div class="manifest-head"><div><span class="kit-name">${orderIdDisplay(o)}</span> <span class="kit-code">· Delivery ${deliveryDateDisplay(o)} · Placed ${placedDateDisplay(o)}</span></div>
     <div style="display:flex; gap:6px; align-items:center;">
       ${statusBadge}
       ${isConfirmed ? `<span class="badge ${paymentStatus}">${paymentStatus}</span>` : ''}
@@ -2349,19 +2374,22 @@ async function placeOrder(){
   // separate admin confirmation step.
   const doctorRecord = findDoc(SESSION.doctorId);
   const needsApproval = SESSION.accountKey !== 'doctor' && !!(doctorRecord && doctorRecord.requireDoctorReview);
+  const placedAt = new Date();
+  const orderId = await generateOrderId(placedAt);
   await db.ref('orders/' + uid('ord')).set({
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
+    orderId,
     items,
-    date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'confirmed', createdAt: new Date().toISOString()
+    date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'confirmed', createdAt: placedAt.toISOString()
   });
   if(needsApproval){
     const doctorPhone = doctorRecord.accounts.doctor && doctorRecord.accounts.doctor.phone;
-    const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order that needs your review before it's sent to Sante Life Science.\nPlease open the Kit Desk app to approve, edit, or reject it.\n— Sante Life Science`;
+    const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order (${orderId}) that needs your review before it's sent to Sante Life Science.\nPlease open the Kit Desk app to approve, edit, or reject it.\n— Sante Life Science`;
     if(doctorPhone) window.open(`https://wa.me/${doctorPhone}?text=${encodeURIComponent(msg)}`, '_blank');
     alert("Order submitted for the doctor's approval. They'll need to review it before it's placed.");
   } else {
-    alert('Order placed and confirmed. The Sante team has been notified.');
+    alert(`Order ${orderId} placed and confirmed. The Sante team has been notified.`);
   }
   showView('doc-orders');
 }
@@ -2486,8 +2514,8 @@ function renderDoctorReportBody(containerId, doctorId){
     </div>
     <div class="panel" style="margin-top:16px;">
       <div class="panel-title">All orders</div>
-      <div class="table-wrap"><table><thead><tr><th>Date</th><th style="text-align:center;">Items</th><th>Status</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Incentive</th><th style="text-align:right;">Inc. Paid</th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${r.o.date} ${r.o.time}</td><td class="num" style="text-align:center;">${orderItems(r.o).length}</td><td><span class="badge ${orderStatusBadgeClass(r.o)}">${orderStatusLabel(r.o)}</span></td><td class="num" style="text-align:right;">${money(r.mrp)}</td><td class="num" style="text-align:right;">${money(r.disc)}</td><td class="num" style="text-align:right;">${money(r.paid)}</td><td class="num" style="text-align:right; color:${r.balance>0?'var(--rust)':'var(--sage)'}">${money(r.balance)}</td><td class="num" style="text-align:right;">${money(r.inc)}</td><td class="num" style="text-align:right;">${money(r.incPaid)}</td></tr>`).join('') : `<tr><td colspan="9" class="empty">No orders yet.</td></tr>`}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Order ID</th><th>Delivery</th><th style="text-align:center;">Items</th><th>Status</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Incentive</th><th style="text-align:right;">Inc. Paid</th></tr></thead>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${orderIdDisplay(r.o)}</td><td>${r.o.date} ${r.o.time}</td><td class="num" style="text-align:center;">${orderItems(r.o).length}</td><td><span class="badge ${orderStatusBadgeClass(r.o)}">${orderStatusLabel(r.o)}</span></td><td class="num" style="text-align:right;">${money(r.mrp)}</td><td class="num" style="text-align:right;">${money(r.disc)}</td><td class="num" style="text-align:right;">${money(r.paid)}</td><td class="num" style="text-align:right; color:${r.balance>0?'var(--rust)':'var(--sage)'}">${money(r.balance)}</td><td class="num" style="text-align:right;">${money(r.inc)}</td><td class="num" style="text-align:right;">${money(r.incPaid)}</td></tr>`).join('') : `<tr><td colspan="10" class="empty">No orders yet.</td></tr>`}</tbody></table></div>
     </div>
     <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; align-items:center;">
       <label class="small" style="margin:0;">Statement period</label>
@@ -2579,9 +2607,9 @@ async function downloadReportPdf(doctorId, month){
   pdf.setFont('helvetica','bold'); pdf.setFontSize(11); pdf.text('Order detail', 40, y); y += 8;
   pdf.autoTable({
     startY: y,
-    head: [['Date','Time','Status','Items','MRP','Disc %','Billed','Paid','Balance','Incentive','Inc. Paid']],
-    body: rows.map(r=>[r.o.date, r.o.time, orderStatusLabel(r.o), String(orderItems(r.o).length), money(r.mrp), r.discPct+'%', money(r.disc), money(r.paid), money(r.balance), money(r.inc), money(r.incPaid)]),
-    theme:'striped', styles:{fontSize:7.5, cellPadding:4}, headStyles:{fillColor:[45,34,24], fontSize:7.5},
+    head: [['Order ID','Delivery','Status','Items','MRP','Disc %','Billed','Paid','Balance','Incentive','Inc. Paid']],
+    body: rows.map(r=>[orderIdDisplay(r.o), `${r.o.date} ${r.o.time}`, orderStatusLabel(r.o), String(orderItems(r.o).length), money(r.mrp), r.discPct+'%', money(r.disc), money(r.paid), money(r.balance), money(r.inc), money(r.incPaid)]),
+    theme:'striped', styles:{fontSize:7, cellPadding:3.5}, headStyles:{fillColor:[45,34,24], fontSize:7},
     margin:{left:40, right:40},
     didDrawPage: (data) => {
       pdf.setFontSize(8); pdf.setTextColor(150);
@@ -2593,8 +2621,8 @@ async function downloadReportPdf(doctorId, month){
 function downloadReportCsv(doctorId, month){
   const { doc: d, rows: allRows } = buildDoctorReportData(doctorId);
   const rows = reportRowsForPeriod(allRows, month);
-  const header = ['Date','Time','Status','Items','MRP','Discount %','Billed','Paid','Balance','Incentive','Incentive Paid','Incentive Balance'];
-  const csvRows = rows.map(r=>[r.o.date, r.o.time, orderStatusLabel(r.o), orderItems(r.o).length, r.mrp, r.discPct, r.disc, r.paid, r.balance, r.inc, r.incPaid, r.incBalance]);
+  const header = ['Order ID','Placed','Delivery Date','Delivery Time','Status','Items','MRP','Discount %','Billed','Paid','Balance','Incentive','Incentive Paid','Incentive Balance'];
+  const csvRows = rows.map(r=>[orderIdDisplay(r.o), placedDateDisplay(r.o), r.o.date, r.o.time, orderStatusLabel(r.o), orderItems(r.o).length, r.mrp, r.discPct, r.disc, r.paid, r.balance, r.inc, r.incPaid, r.incBalance]);
   const csv = [header, ...csvRows].map(row=>row.map(v=>{
     const s = String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
