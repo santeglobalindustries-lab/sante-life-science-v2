@@ -524,6 +524,66 @@ function uid(prefix){ return prefix + '-' + Date.now().toString(36) + Math.rando
 function escapeAttr(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 /* ============================================================
+   ADMIN: NEW-ORDER CHIME
+   Plays a short tone (+ a phone vibrate where supported) the moment a new
+   order becomes visible to Admin — works the same on a laptop browser tab
+   and on the phone PWA, since both just run this same JS. It only fires
+   while the app is actually open in the foreground; a phone with the app
+   closed/backgrounded won't ring (that needs real push notifications,
+   a separate, bigger project).
+   The tone is synthesized with the Web Audio API rather than an audio
+   file, so there's nothing to bundle and it works fully offline.
+============================================================ */
+let orderChimeAudioCtx = null;
+function unlockOrderChimeAudio(){
+  if(orderChimeAudioCtx) return;
+  try{ orderChimeAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){}
+}
+// Browsers only allow audio after a real tap/click on the page — logging in
+// is itself a click, so by the time any order can arrive, audio is already
+// unlocked for the session.
+document.addEventListener('click', unlockOrderChimeAudio, {once:true});
+document.addEventListener('touchstart', unlockOrderChimeAudio, {once:true});
+function playOrderChime(){
+  try{
+    if(!orderChimeAudioCtx) orderChimeAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(orderChimeAudioCtx.state === 'suspended') orderChimeAudioCtx.resume();
+    const t0 = orderChimeAudioCtx.currentTime;
+    [880, 1175].forEach((freq, i) => {
+      const start = t0 + i*0.15;
+      const osc = orderChimeAudioCtx.createOscillator();
+      const gain = orderChimeAudioCtx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.4, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+      osc.connect(gain); gain.connect(orderChimeAudioCtx.destination);
+      osc.start(start); osc.stop(start + 0.36);
+    });
+  }catch(e){ console.warn('Could not play order chime', e); }
+  if(navigator.vibrate){ try{ navigator.vibrate([120,60,120]); }catch(e){} }
+}
+// Tracks which orders Admin can currently see (excludes deleted ones and
+// staff orders still awaiting the doctor's own approval, exactly like
+// renderAdminOrders does) so the chime fires only when one newly appears —
+// never on edits/payments to an order Admin was already looking at, and
+// never for the whole existing order book on first login/page load.
+let adminVisibleOrderIdsSeen = null;
+function checkNewOrdersForChime(ordersObj){
+  const visibleNow = new Set(Object.entries(ordersObj || {})
+    .filter(([id,o]) => !o.deleted && o.status !== 'awaiting_doctor_approval')
+    .map(([id]) => id));
+  if(adminVisibleOrderIdsSeen === null){
+    adminVisibleOrderIdsSeen = visibleNow; // first snapshot just sets the baseline
+    return;
+  }
+  let hasNewOrder = false;
+  visibleNow.forEach(id => { if(!adminVisibleOrderIdsSeen.has(id)) hasNewOrder = true; });
+  adminVisibleOrderIdsSeen = visibleNow;
+  if(hasNewOrder && SESSION && SESSION.role === 'admin') playOrderChime();
+}
+
+/* ============================================================
    REALTIME LISTENERS
 ============================================================ */
 function attachListeners(){
@@ -534,7 +594,12 @@ function attachListeners(){
     doctorsDataLoaded = true;
     rerenderIfNeeded();
   });
-  db.ref('orders').on('value', snap => { DB.orders = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('orders').on('value', snap => {
+    const ordersObj = snap.val() || {};
+    checkNewOrdersForChime(ordersObj);
+    DB.orders = ordersObj;
+    rerenderIfNeeded();
+  });
   db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
 }
 function rerenderIfNeeded(){
