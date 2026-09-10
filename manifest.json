@@ -1,7 +1,7 @@
 {
-  "name": "Sante Life Science",
-  "short_name": "Sante Kit Desk",
-  "description": "Instrument kit booking, ordering, and doctor ledger for Sante Life Science",
+  "name": "SLS \u2013 Sante Life Sciences",
+  "short_name": "SLS",
+  "description": "Instrument kit booking, ordering, and doctor ledger for SLS (Sante Life Sciences)",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

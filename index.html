@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Sante Life Science</title>
+<title>SLS</title>
 
 <link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#0A0908">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Sante Kit Desk">
+<meta name="apple-mobile-web-app-title" content="SLS">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="icon" href="./icons/icon-192.png">
 
@@ -193,7 +193,7 @@
 <!-- ============ LOGIN ============ -->
 <div id="login-screen">
   <div class="login-card">
-    <div class="brand-mark">Sante Life Science</div>
+    <div class="brand-mark">SLS</div>
     <div class="brand-title">Kit &amp; Ledger Desk</div>
     <div class="brand-sub" id="login-sub">Instrument kit booking, ordering, and doctor accounts.</div>
 
@@ -272,7 +272,7 @@
 <div id="app">
   <div class="topbar">
     <div class="brand">
-      <div class="brand-title serif">Sante Life Science</div>
+      <div class="brand-title serif">SLS</div>
       <div class="tag">Kit Desk</div>
     </div>
     <div class="who">
@@ -658,7 +658,7 @@ async function registerBiometric(label){
   const cred = await navigator.credentials.create({
     publicKey: {
       challenge,
-      rp: { name: "Sante Life Science" },
+      rp: { name: "SLS" },
       user: { id: userId, name: label, displayName: label },
       pubKeyCredParams: [{alg:-7, type:"public-key"}, {alg:-257, type:"public-key"}],
       authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
@@ -860,7 +860,7 @@ function logout(){
 }
 function refreshWho(){
   if(SESSION.role==='admin'){
-    document.getElementById('who-name').textContent='Sante Life Science Admin';
+    document.getElementById('who-name').textContent='SLS Admin';
     document.getElementById('who-role').textContent='Admin';
   } else {
     const doc = DB.doctors[SESSION.doctorId];
@@ -2639,7 +2639,7 @@ async function downloadReportPdf(doctorId, month){
   if(logo){ try{ pdf.addImage(logo, 'PNG', 40, y-6, 36, 36); }catch(e){} }
   const textX = logo ? 86 : 40;
   pdf.setFont('times','bold'); pdf.setFontSize(20); pdf.setTextColor(30,24,18);
-  pdf.text('Sante Life Science', textX, y+14);
+  pdf.text('SLS', textX, y+14);
   pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(140,110,70);
   pdf.text('KIT DESK', textX, y+28);
   pdf.setTextColor(0);
@@ -2678,7 +2678,7 @@ async function downloadReportPdf(doctorId, month){
     margin:{left:40, right:40},
     didDrawPage: (data) => {
       pdf.setFontSize(8); pdf.setTextColor(150);
-      pdf.text(`Sante Life Science — ${d.name} — page ${pdf.internal.getNumberOfPages()}`, 40, pdf.internal.pageSize.getHeight()-20);
+      pdf.text(`SLS — ${d.name} — page ${pdf.internal.getNumberOfPages()}`, 40, pdf.internal.pageSize.getHeight()-20);
     }
   });
   pdf.save(`${d.name.replace(/\s+/g,'_')}_${month||'all-time'}_statement.pdf`);
