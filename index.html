@@ -194,7 +194,6 @@
 <div id="login-screen">
   <div class="login-card">
     <div class="brand-mark">SLS</div>
-    <div class="brand-title">Kit &amp; Ledger Desk</div>
     <div class="brand-sub" id="login-sub">Instrument kit booking, ordering, and doctor accounts.</div>
 
     <!-- Step -1: checking whether this device is already remembered (default on load) -->
@@ -273,7 +272,6 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-title serif">SLS</div>
-      <div class="tag">Kit Desk</div>
     </div>
     <div class="who">
       <div><div class="name" id="who-name">—</div></div>
@@ -2450,7 +2448,7 @@ async function placeOrder(){
   });
   if(needsApproval){
     const doctorPhone = doctorRecord.accounts.doctor && doctorRecord.accounts.doctor.phone;
-    const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order (${orderId}) that needs your review before it's sent to Sante Life Science.\nPlease open the Kit Desk app to approve, edit, or reject it.\n— Sante Life Science`;
+    const msg = `Hello Dr ${doctorRecord.name}, ${SESSION.accountLabel} has placed a new order (${orderId}) that needs your review before it's sent to Sante Life Science.\nPlease open the SLS app to approve, edit, or reject it.\n— Sante Life Science`;
     if(doctorPhone) window.open(`https://wa.me/${doctorPhone}?text=${encodeURIComponent(msg)}`, '_blank');
     alert("Order submitted for the doctor's approval. They'll need to review it before it's placed.");
   } else {
@@ -2640,8 +2638,6 @@ async function downloadReportPdf(doctorId, month){
   const textX = logo ? 86 : 40;
   pdf.setFont('times','bold'); pdf.setFontSize(20); pdf.setTextColor(30,24,18);
   pdf.text('SLS', textX, y+14);
-  pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(140,110,70);
-  pdf.text('KIT DESK', textX, y+28);
   pdf.setTextColor(0);
   y += 56;
   pdf.setDrawColor(210); pdf.line(40, y, 555, y); y += 22;

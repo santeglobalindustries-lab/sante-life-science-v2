@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sante-kit-desk-v2';
+const CACHE_NAME = 'sls-app-v3';
 const ASSETS = [
   './',
   './index.html',
