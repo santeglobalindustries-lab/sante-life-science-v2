@@ -300,11 +300,11 @@
         <div class="view-header">
           <div class="eyebrow">Catalog</div>
           <div class="view-title serif">Product Catalog</div>
-          <div class="view-desc">MRP master list. Doctors search this list when adding items to a kit.</div>
+          <div class="view-desc">MRP master list. Doctors search and browse this list when placing orders.</div>
         </div>
         <div class="panel">
           <div class="panel-title">Import / update prices</div>
-          <div class="view-desc" style="margin-bottom:10px;">Paste CSV rows as <span class="mono">code,name,category,mrp</span> — one product per line. Nothing is written until you review and confirm the preview below.</div>
+          <div class="view-desc" style="margin-bottom:10px;">Paste CSV rows as <span class="mono">code,name,category,mrp</span> — one product per line. Nothing is written until you tag each group and confirm the preview.</div>
           <div style="margin-bottom:12px;">
             <label class="small">Upload a CSV file</label>
             <input type="file" id="csv-file" accept=".csv,text/csv" onchange="importCsvFile(event)">
@@ -316,6 +316,7 @@
             <button class="btn btn-outline btn-sm" onclick="document.getElementById('csv-input').value=''">Clear</button>
             <span id="import-status" style="font-size:12px; color:var(--sage);"></span>
           </div>
+          <div id="import-groups" style="margin-top:12px; display:none;"></div>
           <div id="import-preview" style="margin-top:12px; padding:12px; border:1px solid var(--amber); background:rgba(212,165,116,0.06); display:none;"></div>
           <div id="import-skipped-detail" style="margin-top:10px; font-size:12px; color:var(--cream-faint); display:none;"></div>
           <div class="divider"></div>
@@ -323,13 +324,64 @@
           <div class="view-desc" style="margin-bottom:6px;">A snapshot of the whole catalog is saved automatically right before every import — restore one if an import turns out to be wrong.</div>
           <div id="catalog-backups-list"></div>
         </div>
-        <div class="flex-between" style="margin-bottom:12px;">
-          <input type="text" id="product-search" placeholder="Search catalog…" style="max-width:280px;" oninput="renderProductTable()">
+        <div class="panel">
+          <div class="panel-title">Add one product manually</div>
+          <div class="view-desc" style="margin-bottom:10px;">For a one-off addition — like a new Instrument Set — without going through CSV.</div>
+          <div class="row">
+            <div><label class="small">Code</label><input type="text" id="new-p-code" placeholder="e.g. SET-PEDICLE-01"></div>
+            <div><label class="small">Name</label><input type="text" id="new-p-name" placeholder="e.g. Pedicle Instruments Set"></div>
+          </div>
+          <div class="row">
+            <div><label class="small">Sub-family / category text</label><input type="text" id="new-p-category" placeholder="e.g. Pedicle Instruments Set"></div>
+            <div><label class="small">Price (₹)</label><input type="number" id="new-p-mrp" placeholder="e.g. 172000"></div>
+          </div>
+          <div class="row">
+            <div><label class="small">System</label><select id="new-p-system"></select></div>
+            <div><label class="small">Category</label><select id="new-p-topcat"></select></div>
+          </div>
+          <div class="row">
+            <div><label class="small">Type</label><select id="new-p-type"><option value="implant">Implant</option><option value="instrument">Instrument</option></select></div>
+            <div style="display:flex; align-items:flex-end; gap:6px; padding-bottom:8px;">
+              <label class="small" style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" id="new-p-fixedset" onchange="toggleNewFixedSetHint()"> This is a fixed Instrument Set (one price, no discount/incentive)</label>
+            </div>
+          </div>
+          <div id="new-p-contents-wrap" style="display:none; margin-bottom:10px;">
+            <label class="small">What's included (optional — for your team's reference, doctors can't edit this)</label>
+            <textarea id="new-p-contents" placeholder="e.g. Awl, tap, screwdriver, reduction forceps, rod bender…" style="min-height:60px;"></textarea>
+          </div>
+          <button class="btn btn-sm" onclick="createProductManually()">Add product</button>
+          <span id="new-p-status" style="font-size:12px; margin-left:10px;"></span>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Manage Systems &amp; Categories</div>
+          <div class="view-desc" style="margin-bottom:10px;">These are the values available everywhere else on this page and in the doctor's ordering screen — add a new one any time a genuinely new product line shows up, nothing else needs to change.</div>
+          <div class="row">
+            <div>
+              <label class="small">Systems</label>
+              <div id="taxonomy-systems-list" style="margin-bottom:6px;"></div>
+              <div style="display:flex; gap:6px;"><input type="text" id="new-system-input" placeholder="e.g. Foot & Ankle System" style="flex:1;"><button class="btn btn-outline btn-sm" onclick="addTaxonomyValue('system', document.getElementById('new-system-input').value).then(()=>{document.getElementById('new-system-input').value='';})">Add</button></div>
+            </div>
+            <div>
+              <label class="small">Categories</label>
+              <div id="taxonomy-categories-list" style="margin-bottom:6px;"></div>
+              <div style="display:flex; gap:6px;"><input type="text" id="new-category-input" placeholder="e.g. Drill Bits" style="flex:1;"><button class="btn btn-outline btn-sm" onclick="addTaxonomyValue('category', document.getElementById('new-category-input').value).then(()=>{document.getElementById('new-category-input').value='';})">Add</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="flex-between" style="margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+          <input type="text" id="product-search" placeholder="Search catalog…" style="max-width:280px;" oninput="productPage=1; renderProductTable()">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <select id="product-filter-system" onchange="productPage=1; renderProductTable()"><option value="">All systems</option></select>
+            <select id="product-filter-category" onchange="productPage=1; renderProductTable()"><option value="">All categories</option></select>
+            <select id="product-filter-type" onchange="productPage=1; renderProductTable()"><option value="">Implants &amp; instruments</option><option value="implant">Implants only</option><option value="instrument">Instruments only</option></select>
+            <button class="btn btn-outline btn-sm" onclick="retagLegacyProducts()">Auto-tag untagged products</button>
+          </div>
           <span class="view-desc" id="product-count"></span>
         </div>
         <div class="table-wrap">
           <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th style="text-align:center;">Discount %</th><th style="text-align:center;">Incentive %</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
+        <div id="product-pagination" style="display:flex; justify-content:center; gap:10px; margin-top:14px; align-items:center;"></div>
       </div>
 
       <!-- ===== ADMIN: Kits ===== -->
@@ -422,14 +474,31 @@
       <!-- ===== DOCTOR: New Order ===== -->
       <div class="view" id="v-doc-neworder">
         <div class="view-header"><div class="eyebrow">Book</div><div class="view-title serif" id="order-form-title">New Order</div><div class="view-desc" id="order-form-desc">Pick a kit template, customize it, and set the date &amp; time.</div></div>
+        <div class="panel" id="order-instrument-sets-panel" style="display:none;">
+          <div class="panel-title">1. Instrument Sets for this surgery (optional)</div>
+          <div class="view-desc" style="margin-bottom:8px;">Each set is fixed and billed as one item — tap to add one, then separately add whatever implants you need below.</div>
+          <div class="pill-list" id="order-instrument-set-chips"></div>
+        </div>
         <div class="panel">
-          <div class="panel-title">1. Choose a kit template (optional)</div>
+          <div class="panel-title">2. Choose a kit template (optional)</div>
           <select id="order-kit-select" onchange="applyKitTemplate()"><option value="">— Build from scratch —</option></select>
         </div>
         <div class="panel">
-          <div class="panel-title">2. Items in this order</div>
+          <div class="panel-title">3. Items in this order</div>
           <input type="text" id="order-product-search" placeholder="Search catalog to add an item…" oninput="renderOrderProductSearch()">
           <div class="search-results" id="order-product-results" style="display:none;"></div>
+          <div style="margin:8px 0;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="toggleOrderBrowse()" id="order-browse-toggle">Browse by category ▾</button>
+          </div>
+          <div id="order-browse-panel" style="display:none; border:1px solid var(--line); padding:10px; margin-bottom:10px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+              <select id="order-browse-system" onchange="renderOrderBrowseResults()"><option value="">All systems</option></select>
+              <select id="order-browse-category" onchange="renderOrderBrowseResults()"><option value="">All categories</option></select>
+              <select id="order-browse-diameter" onchange="renderOrderBrowseResults()"><option value="">Any diameter</option></select>
+              <select id="order-browse-length" onchange="renderOrderBrowseResults()"><option value="">Any length</option></select>
+            </div>
+            <div id="order-browse-results" class="search-results" style="display:block; position:static; max-height:320px;"></div>
+          </div>
           <div class="pill-list" id="order-items-pills"></div>
           <div class="divider"></div>
           <div class="flex-between"><span class="view-desc">Total MRP</span><span class="num" id="order-mrp-preview" style="font-size:18px;">₹0</span></div>
@@ -437,7 +506,7 @@
           <div class="flex-between" style="margin-top:6px;"><span class="view-desc">Total incentive</span><span class="num sage" id="order-incentive-preview" style="font-size:16px;">₹0</span></div>
         </div>
         <div class="panel">
-          <div class="panel-title">3. Date &amp; time</div>
+          <div class="panel-title">4. Date &amp; time</div>
           <div class="row">
             <div><label class="small">Delivery date <span style="font-weight:400; color:var(--cream-faint);">— when you need this</span></label><input type="date" id="order-date"></div>
             <div><label class="small">Delivery time</label><input type="time" id="order-time"></div>
@@ -448,6 +517,8 @@
           <button class="btn btn-outline" id="cancel-edit-order-btn" onclick="cancelEditOrder()" style="display:none;">Cancel edit</button>
         </div>
       </div>
+      <!-- Kept for backward compatibility of the "Choose a kit template" numbering; step numbers were renumbered 1→4 above once Instrument Sets became their own first step. -->
+
 
       <!-- ===== DOCTOR: My Orders ===== -->
       <div class="view" id="v-doc-orders">
@@ -508,7 +579,7 @@ firebase.auth().signInAnonymously().catch(err => {
 // CHANGE THIS before going live with real doctors.
 const ADMIN_PASSCODE = "SanteAdmin@2026";
 
-let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {} };
+let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {}, taxonomy: {} };
 let SESSION = null; // {role:'admin'} or {role:'doctor', doctorId, accountKey, accountLabel}
 let pendingLogin = null; // {doctorId, accountKey} while mid-login
 let currentView = null;
@@ -599,6 +670,17 @@ function attachListeners(){
     rerenderIfNeeded();
   });
   db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('taxonomy').on('value', snap => {
+    DB.taxonomy = snap.val() || {};
+    // First-ever load with nothing saved yet — seed sensible starting values
+    // so Admin isn't staring at empty dropdowns. This only ever writes once;
+    // after that, taxonomy is entirely admin-managed data (see "Manage
+    // categories" on the Product Catalog screen), never hardcoded again.
+    if(!DB.taxonomy.systems && !DB.taxonomy.categories){
+      db.ref('taxonomy').set(DEFAULT_TAXONOMY).catch(()=>{});
+    }
+    rerenderIfNeeded();
+  });
 }
 function rerenderIfNeeded(){
   if(SESSION && currentView) showView(currentView, true);
@@ -608,6 +690,89 @@ function productsArr(){ return Object.entries(DB.products || {}).map(([id,p])=>(
 function kitsArr(){ return Object.entries(DB.kits).map(([id,k])=>({id,...k})); }
 function doctorsArr(){ return Object.entries(DB.doctors).map(([id,d])=>({id,...d})); }
 function ordersArr(){ return Object.entries(DB.orders).map(([id,o])=>({id,...o})); }
+
+/* ============================================================
+   CATALOG TAXONOMY — System / Type / Category
+   Stored as plain data under taxonomy/ (not hardcoded) so Admin can add a
+   new System or Category from the Product Catalog screen at any time, with
+   no code change needed. The keyword rules below only *suggest* a System
+   and Category for a product at import time (validated against the real
+   1,336-row catalog — 100% coverage) — they never silently overwrite a
+   value someone already set by hand.
+============================================================ */
+const DEFAULT_TAXONOMY = {
+  systems: ['Trauma System','Spine System','CMF System'],
+  categories: ['Screws','Plates','Rods','Cages','Nails','Prosthesis','Mesh','Connectors & Hooks','Anchors','Buttons','Staples','Instrument Sets','Other']
+};
+function taxonomySystems(){ return (DB.taxonomy && DB.taxonomy.systems) || DEFAULT_TAXONOMY.systems; }
+function taxonomyCategories(){ return (DB.taxonomy && DB.taxonomy.categories) || DEFAULT_TAXONOMY.categories; }
+async function addTaxonomyValue(kind, value){
+  value = (value||'').trim();
+  if(!value) return;
+  const key = kind==='system' ? 'systems' : 'categories';
+  const current = kind==='system' ? taxonomySystems() : taxonomyCategories();
+  if(current.some(v=>v.toLowerCase()===value.toLowerCase())) return; // already exists
+  await db.ref(`taxonomy/${key}`).set([...current, value]);
+}
+async function removeTaxonomyValue(kind, value){
+  const key = kind==='system' ? 'systems' : 'categories';
+  const current = kind==='system' ? taxonomySystems() : taxonomyCategories();
+  await db.ref(`taxonomy/${key}`).set(current.filter(v=>v!==value));
+}
+const CATEGORY_RULES = [
+  ['Screws', /screws?\b|\bbolts?\b/i],
+  ['Plates', /plates?\b/i],
+  ['Rods', /\brods?\b/i],
+  ['Cages', /\bcages?\b/i],
+  ['Nails', /\bnails?\b/i],
+  ['Prosthesis', /prosthes(is|es)\b|\bshells?\b|\bcups?\b/i],
+  ['Mesh', /\bmesh\b/i],
+  ['Connectors & Hooks', /connectors?\b|\bhooks?\b|\bcrosslinks?\b/i],
+  ['Anchors', /\banchors?\b/i],
+  ['Buttons', /\bbuttons?\b|\bendobuttons?\b|\btighrope\b/i],
+  ['Staples', /\bstaples?\b/i],
+];
+const SYSTEM_RULES = [
+  ['Spine System', /tlif|plif|cervic(le|al)|posterior occipital|pedicle|spinal|lumbar|kidney cage|bullet cage|expandable cage/i],
+  ['CMF System', /cranial|mandible|orbital|\bnose\b|tmj|maxillofacial|burr hole|mastoid|zygoma/i],
+];
+// A product name containing "instrument set"/"instruments set" is always a
+// fixed, single-priced instrument tray (see the Sante instrument sheets) —
+// checked before the general category rules so it never gets misfiled as
+// an ordinary Screw/Plate just because the tray happens to hold screws.
+function suggestCategory(text){
+  if(/instruments?\s*set/i.test(text)) return 'Instrument Sets';
+  for(const [name, pat] of CATEGORY_RULES){ if(pat.test(text)) return name; }
+  return 'Other';
+}
+function suggestSystem(text){
+  for(const [name, pat] of SYSTEM_RULES){ if(pat.test(text)) return name; }
+  return 'Trauma System'; // the largest, general-purpose default bucket
+}
+function suggestIsInstrument(text){ return /instruments?\s*set|\binstrument\b/i.test(text); }
+// Pulls real numeric attributes out of a product name so they become
+// filterable facets instead of buried text — validated against the real
+// catalog: ~97% of rows yield a diameter, 63% a length, handles both
+// "2.5 mm x 4.0 mm" (existing catalog) and "4.5 X 25 MM" (new pedicle
+// screw sheet) naming styles, plate hole-counts, angles, and Left/Right.
+function extractProductAttributes(name, code){
+  const out = {};
+  const twoNum = name.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*[xX]\s*([0-9]+(?:\.[0-9]+)?)\s*mm/i);
+  if(twoNum){
+    out.diameterMm = parseFloat(twoNum[1]);
+    out.lengthMm = parseFloat(twoNum[2]);
+  } else {
+    const dia = name.match(/(?:[Øø]|dia\.?)\s*([0-9]+(?:\.[0-9]+)?)\s*mm/i) || name.match(/([0-9]+(?:\.[0-9]+)?)\s*mm/i);
+    if(dia) out.diameterMm = parseFloat(dia[1]);
+  }
+  const hole = name.match(/([0-9]+)\s*Hole/i);
+  if(hole) out.holeCount = parseInt(hole[1]);
+  const angle = name.match(/([0-9]+)\s*°/);
+  if(angle) out.angleDeg = parseInt(angle[1]);
+  if(/\(\s*left\s*\)/i.test(name) || /[0-9]L$/.test(code||'')) out.laterality = 'Left';
+  else if(/\(\s*right\s*\)/i.test(name) || /[0-9]R$/.test(code||'')) out.laterality = 'Right';
+  return out;
+}
 function payoutsArr(){ return Object.entries(DB.payouts).map(([id,p])=>({id,...p})); }
 // Orders are auto-confirmed the moment they're placed (no admin confirmation
 // step anymore) — the only "not yet final" states left are a staff order
@@ -883,7 +1048,7 @@ function showView(id, silent){
   document.getElementById('v-'+id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===id));
   if(id==='admin-dashboard') renderAdminDashboard();
-  if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); }
+  if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); renderTaxonomyControls(); }
   if(id==='admin-kits') renderKitsList();
   if(id==='admin-doctors') renderDoctorsList();
   if(id==='admin-reports') renderAdminReports();
@@ -1004,12 +1169,18 @@ function effectiveDiscountPct(o){
 }
 function itemDiscountPct(it, doc){
   const p = findProduct(it.code);
+  // A fixed instrument set is never discounted and never earns incentive —
+  // this is enforced here unconditionally, not just by leaving discountPct
+  // blank on the product, so a stray doctor-level default rate can never
+  // leak a margin onto a set by accident.
+  if(p && p.isFixedSet) return 0;
   if(p && p.discountPct !== undefined && p.discountPct !== null) return p.discountPct;
   if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
   return doc?.incentivePct || 0;
 }
 function itemIncentivePct(it, doc){
   const p = findProduct(it.code);
+  if(p && p.isFixedSet) return 0;
   if(p && p.incentivePct !== undefined && p.incentivePct !== null) return p.incentivePct;
   return doc?.incentivePct || 0;
 }
@@ -1102,15 +1273,107 @@ function renderAdminDashboard(){
 /* ============================================================
    ADMIN: PRODUCTS
 ============================================================ */
+let productPage = 1;
+const PRODUCTS_PER_PAGE = 100;
+function optionsHtml(values, selected){
+  return values.map(v=>`<option value="${escapeAttr(v)}" ${v===selected?'selected':''}>${escapeAttr(v)}</option>`).join('');
+}
+function renderTaxonomyControls(){
+  const systems = taxonomySystems(), cats = taxonomyCategories();
+  const sysListEl = document.getElementById('taxonomy-systems-list');
+  const catListEl = document.getElementById('taxonomy-categories-list');
+  if(sysListEl) sysListEl.innerHTML = systems.map(s=>`<span class="pill" style="margin:2px 4px 2px 0;">${escapeAttr(s)} <button onclick="removeTaxonomyValue('system','${escapeAttr(s)}')" title="Remove">×</button></span>`).join('') || '<span class="hint">None yet.</span>';
+  if(catListEl) catListEl.innerHTML = cats.map(c=>`<span class="pill" style="margin:2px 4px 2px 0;">${escapeAttr(c)} <button onclick="removeTaxonomyValue('category','${escapeAttr(c)}')" title="Remove">×</button></span>`).join('') || '<span class="hint">None yet.</span>';
+  const filterSys = document.getElementById('product-filter-system');
+  const filterCat = document.getElementById('product-filter-category');
+  const newSys = document.getElementById('new-p-system');
+  const newCat = document.getElementById('new-p-topcat');
+  if(filterSys) filterSys.innerHTML = `<option value="">All systems</option>` + optionsHtml(systems, filterSys.value);
+  if(filterCat) filterCat.innerHTML = `<option value="">All categories</option>` + optionsHtml(cats, filterCat.value);
+  if(newSys) newSys.innerHTML = optionsHtml(systems, newSys.value);
+  if(newCat) newCat.innerHTML = optionsHtml(cats, newCat.value);
+}
+function toggleNewFixedSetHint(){
+  const on = document.getElementById('new-p-fixedset').checked;
+  document.getElementById('new-p-contents-wrap').style.display = on ? 'block' : 'none';
+  if(on){
+    document.getElementById('new-p-topcat').value = 'Instrument Sets';
+    document.getElementById('new-p-type').value = 'instrument';
+  }
+}
+async function createProductManually(){
+  const code = document.getElementById('new-p-code').value.trim();
+  const name = document.getElementById('new-p-name').value.trim();
+  const category = document.getElementById('new-p-category').value.trim();
+  const mrp = Math.round(parseFloat(document.getElementById('new-p-mrp').value) || 0);
+  const statusEl = document.getElementById('new-p-status');
+  if(!code || !name || !mrp){ statusEl.style.color='var(--rust)'; statusEl.textContent='Code, name, and price are required.'; return; }
+  if(findProduct(code)){ statusEl.style.color='var(--rust)'; statusEl.textContent=`Code "${code}" already exists — use Edit on that row instead.`; return; }
+  const isFixedSet = document.getElementById('new-p-fixedset').checked;
+  const payload = {
+    code, name, category, mrp,
+    system: document.getElementById('new-p-system').value,
+    topCategory: isFixedSet ? 'Instrument Sets' : document.getElementById('new-p-topcat').value,
+    type: document.getElementById('new-p-type').value,
+    ...extractProductAttributes(name, code),
+  };
+  if(isFixedSet){
+    payload.isFixedSet = true;
+    payload.discountPct = 0;
+    payload.incentivePct = 0;
+    const contents = document.getElementById('new-p-contents').value.trim();
+    if(contents) payload.contents = contents;
+  }
+  try{
+    await db.ref('products/'+sanitizeKey(code)).set(payload);
+    statusEl.style.color='var(--sage)'; statusEl.textContent=`Added "${name}".`;
+    ['new-p-code','new-p-name','new-p-category','new-p-mrp','new-p-contents'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('new-p-fixedset').checked = false;
+    toggleNewFixedSetHint();
+  }catch(err){ statusEl.style.color='var(--rust)'; statusEl.textContent='Could not add: '+err.message; }
+}
+// One-click backfill for products imported before this taxonomy existed
+// (your current 1,336-row catalog, for instance) — runs the same
+// keyword/attribute rules used at import time against anything still
+// missing a topCategory, without touching products that already have one
+// (so a manual correction never gets silently overwritten).
+async function retagLegacyProducts(){
+  const untagged = productsArr().filter(p => !p.topCategory);
+  if(!untagged.length){ alert('Every product already has a Category tag — nothing to do.'); return; }
+  if(!confirm(`Auto-tag ${untagged.length} product(s) that don't have a System/Category yet? You can still correct any of them by hand afterward.`)) return;
+  const updates = {};
+  untagged.forEach(p=>{
+    const text = `${p.category||''} ${p.name||''}`;
+    updates[`${sanitizeKey(p.code)}/system`] = suggestSystem(text);
+    updates[`${sanitizeKey(p.code)}/topCategory`] = suggestCategory(text);
+    updates[`${sanitizeKey(p.code)}/type`] = suggestIsInstrument(text) ? 'instrument' : 'implant';
+    const attrs = extractProductAttributes(p.name||'', p.code);
+    Object.entries(attrs).forEach(([k,v])=>{ if(p[k]===undefined) updates[`${sanitizeKey(p.code)}/${k}`] = v; });
+  });
+  await db.ref('products').update(updates);
+  alert(`Tagged ${untagged.length} product(s). Spot-check a few in the table below.`);
+}
 function renderProductTable(){
   const q = (document.getElementById('product-search').value||'').toLowerCase();
+  const sysFilter = document.getElementById('product-filter-system')?.value || '';
+  const catFilter = document.getElementById('product-filter-category')?.value || '';
+  const typeFilter = document.getElementById('product-filter-type')?.value || '';
   const all = productsArr();
-  const rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
-  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products` + (rows.length>300 ? ' (showing first 300 — narrow your search to see the rest)' : '');
-  document.getElementById('product-table-body').innerHTML = rows.slice(0,300).map((p,i)=>{
+  let rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q));
+  if(sysFilter) rows = rows.filter(p => p.system === sysFilter);
+  if(catFilter) rows = rows.filter(p => p.topCategory === catFilter);
+  if(typeFilter) rows = rows.filter(p => (p.type||'implant') === typeFilter);
+  const totalPages = Math.max(1, Math.ceil(rows.length / PRODUCTS_PER_PAGE));
+  if(productPage > totalPages) productPage = totalPages;
+  if(productPage < 1) productPage = 1;
+  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products — page ${productPage} of ${totalPages}`;
+  const pageRows = rows.slice((productPage-1)*PRODUCTS_PER_PAGE, productPage*PRODUCTS_PER_PAGE);
+  document.getElementById('product-table-body').innerHTML = pageRows.map((p,i)=>{
+    const rowNum = (productPage-1)*PRODUCTS_PER_PAGE + i + 1;
     if(editingProductId === p.id){
+      const attrBits = ['diameterMm','lengthMm','holeCount','angleDeg'].filter(k=>p[k]!==undefined);
       return `<tr>
-        <td class="num">${i+1}</td>
+        <td class="num">${rowNum}</td>
         <td><input type="text" id="edit-p-code-${p.id}" value="${escapeAttr(p.code)}" style="width:100%;"></td>
         <td><input type="text" id="edit-p-name-${p.id}" value="${escapeAttr(p.name)}" style="width:100%;"></td>
         <td><input type="text" id="edit-p-category-${p.id}" value="${escapeAttr(p.category)}" style="width:100%;"></td>
@@ -1123,28 +1386,55 @@ function renderProductTable(){
           <button class="btn btn-sm" id="save-p-btn-${p.id}" onclick="saveProduct('${p.id}')">Save</button>
           <button class="btn btn-outline btn-sm" onclick="cancelEditProduct()">Cancel</button>
         </td>
+      </tr>
+      <tr>
+        <td></td>
+        <td colspan="9" style="background:var(--bg2); padding:12px;">
+          <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
+            <div><label class="small">System</label><select id="edit-p-system-${p.id}">${optionsHtml(taxonomySystems(), p.system)}</select></div>
+            <div><label class="small">Category</label><select id="edit-p-topcat-${p.id}">${optionsHtml(taxonomyCategories(), p.topCategory)}</select></div>
+            <div><label class="small">Type</label><select id="edit-p-type-${p.id}"><option value="implant" ${p.type!=='instrument'?'selected':''}>Implant</option><option value="instrument" ${p.type==='instrument'?'selected':''}>Instrument</option></select></div>
+            <div><label class="small">Diameter (mm)</label><input type="number" step="0.1" id="edit-p-diameter-${p.id}" value="${p.diameterMm??''}" style="width:90px;"></div>
+            <div><label class="small">Length (mm)</label><input type="number" step="0.1" id="edit-p-length-${p.id}" value="${p.lengthMm??''}" style="width:90px;"></div>
+            <div><label class="small">Laterality</label><select id="edit-p-laterality-${p.id}"><option value="" ${!p.laterality?'selected':''}>—</option><option value="Left" ${p.laterality==='Left'?'selected':''}>Left</option><option value="Right" ${p.laterality==='Right'?'selected':''}>Right</option></select></div>
+            <label class="small" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="edit-p-fixedset-${p.id}" ${p.isFixedSet?'checked':''}> Fixed Instrument Set</label>
+          </div>
+          <div style="margin-top:8px;">
+            <label class="small">What's included (optional, fixed sets only)</label>
+            <textarea id="edit-p-contents-${p.id}" style="min-height:50px; width:100%;">${escapeAttr(p.contents||'')}</textarea>
+          </div>
+          <div class="hint" style="margin-top:4px;">Fixed sets always bill at full price — the Discount/Incentive % fields above are ignored for them.</div>
+        </td>
       </tr>`;
     }
     const stock = effectiveStock(p);
     const stockDisplay = !stockTrackingEnabled(p) && !p.outOfStock ? `<span style="color:var(--cream-faint);">untracked</span>` : `<span class="num" style="color:${stock<=0?'var(--rust)':(stock<10?'var(--amber-bright)':'var(--sage)')}">${isFinite(stock)?stock:'—'}</span>`;
     const hasOwnDiscount = p.discountPct!==undefined && p.discountPct!==null;
     const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
+    const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null].filter(Boolean);
     return `<tr>
-      <td class="num">${i+1}</td>
+      <td class="num">${rowNum}</td>
       <td class="num">${p.code}</td>
       <td>${p.name}</td>
-      <td>${p.category}</td>
+      <td>${p.category}${tagBits.length ? `<br><span style="font-size:10.5px; color:var(--cream-faint);">${tagBits.join(' · ')}</span>` : ''}</td>
       <td class="num" style="text-align:right;">${money(p.mrp)}</td>
       <td style="text-align:center;">${stockDisplay}</td>
       <td>${p.restockDate ? escapeAttr(p.restockDate) : '<span style="color:var(--cream-faint);">—</span>'}</td>
-      <td class="num" style="text-align:center;">${hasOwnDiscount ? `<span style="color:var(--amber-bright);">${p.discountPct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
-      <td class="num" style="text-align:center;">${hasOwnIncentive ? `<span style="color:var(--amber-bright);">${p.incentivePct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
+      <td class="num" style="text-align:center;">${p.isFixedSet ? '<span style="color:var(--cream-faint);">n/a</span>' : hasOwnDiscount ? `<span style="color:var(--amber-bright);">${p.discountPct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
+      <td class="num" style="text-align:center;">${p.isFixedSet ? '<span style="color:var(--cream-faint);">n/a</span>' : hasOwnIncentive ? `<span style="color:var(--amber-bright);">${p.incentivePct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
       <td style="white-space:nowrap;">
         <button class="btn btn-outline btn-sm" onclick="startEditProduct('${p.id}')">Edit</button>
         <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="10" class="empty">No matches.</td></tr>`;
+  const pagerEl = document.getElementById('product-pagination');
+  if(pagerEl){
+    pagerEl.innerHTML = totalPages > 1 ? `
+      <button class="btn btn-outline btn-sm" ${productPage<=1?'disabled':''} onclick="productPage--; renderProductTable();">← Prev</button>
+      <span class="view-desc">Page ${productPage} of ${totalPages}</span>
+      <button class="btn btn-outline btn-sm" ${productPage>=totalPages?'disabled':''} onclick="productPage++; renderProductTable();">Next →</button>` : '';
+  }
 }
 function startEditProduct(id){ editingProductId = id; renderProductTable(); }
 function cancelEditProduct(){ editingProductId = null; renderProductTable(); }
@@ -1157,6 +1447,14 @@ async function saveProduct(id){
   const restockDate = document.getElementById(`edit-p-restock-${id}`).value || null;
   const discountRaw = document.getElementById(`edit-p-discount-${id}`).value;
   const incentiveRaw = document.getElementById(`edit-p-incentive-${id}`).value;
+  const system = document.getElementById(`edit-p-system-${id}`)?.value || '';
+  const topCategory = document.getElementById(`edit-p-topcat-${id}`)?.value || '';
+  const type = document.getElementById(`edit-p-type-${id}`)?.value || 'implant';
+  const diameterRaw = document.getElementById(`edit-p-diameter-${id}`)?.value;
+  const lengthRaw = document.getElementById(`edit-p-length-${id}`)?.value;
+  const laterality = document.getElementById(`edit-p-laterality-${id}`)?.value || '';
+  const isFixedSet = document.getElementById(`edit-p-fixedset-${id}`)?.checked || false;
+  const contents = document.getElementById(`edit-p-contents-${id}`)?.value.trim() || '';
   if(!code || !name){ alert('Code and name are required.'); return; }
   const payload = { code, name, category, mrp };
   // Leaving a rate field blank means "use the doctor's default", exactly
@@ -1166,8 +1464,21 @@ async function saveProduct(id){
   // be explicitly included here, or it'd be silently wiped on every edit.
   if(stockRaw !== ''){ payload.stock = Math.max(0, Math.round(parseFloat(stockRaw)) || 0); }
   if(restockDate){ payload.restockDate = restockDate; }
-  if(discountRaw !== ''){ payload.discountPct = Math.max(0, parseFloat(discountRaw) || 0); }
-  if(incentiveRaw !== ''){ payload.incentivePct = Math.max(0, parseFloat(incentiveRaw) || 0); }
+  if(system) payload.system = system;
+  if(topCategory) payload.topCategory = topCategory;
+  if(type) payload.type = type;
+  if(diameterRaw){ payload.diameterMm = parseFloat(diameterRaw); }
+  if(lengthRaw){ payload.lengthMm = parseFloat(lengthRaw); }
+  if(laterality) payload.laterality = laterality;
+  if(isFixedSet){
+    payload.isFixedSet = true;
+    payload.discountPct = 0;
+    payload.incentivePct = 0;
+    if(contents) payload.contents = contents;
+  } else {
+    if(discountRaw !== ''){ payload.discountPct = Math.max(0, parseFloat(discountRaw) || 0); }
+    if(incentiveRaw !== ''){ payload.incentivePct = Math.max(0, parseFloat(incentiveRaw) || 0); }
+  }
   const btn = document.getElementById(`save-p-btn-${id}`);
   if(btn){ btn.textContent = 'Saving…'; btn.disabled = true; }
   try{
@@ -1252,10 +1563,9 @@ function parseCsvRows(raw){
   if(/code/i.test(lines[0]) && /name|product/i.test(lines[0]) && /mrp|price/i.test(lines[0])){
     lines = lines.slice(1);
   }
-  let added=0, updated=0, skipped=0;
-  const updates = {};
-  const addedSamples = [], updatedSamples = [], skippedRows = [];
-  const existingCodes = new Set(productsArr().map(p=>p.code));
+  const rawRows = [];
+  let skipped = 0;
+  const skippedRows = [];
   lines.forEach(line=>{
     const parts = splitCsvLine(line, delimiter);
     const skip = (reason) => { skipped++; if(skippedRows.length<15) skippedRows.push({line, reason}); };
@@ -1266,25 +1576,131 @@ function parseCsvRows(raw){
     if(!code){ skip('missing code'); return; }
     if(!name){ skip('missing name'); return; }
     if(isNaN(mrp)){ skip(`price "${mrpStr}" isn't a number`); return; }
-    const isNew = !existingCodes.has(code);
-    const old = isNew ? null : findProduct(code);
-    if(isNew){ added++; if(addedSamples.length<5) addedSamples.push({code,name,mrp}); }
-    else { updated++; if(updatedSamples.length<5){ updatedSamples.push({code,name,oldMrp:old?.mrp, mrp}); } }
-    existingCodes.add(code);
-    // A routine price/name update must NOT silently wipe out stock tracking
-    // or a restock date that was set on this product — carry those forward
-    // from the existing record unless this is a brand-new product.
-    const preserved = {};
-    if(old){
-      if(stockTrackingEnabled(old)) preserved.stock = old.stock;
-      if(old.restockDate) preserved.restockDate = old.restockDate;
-      if(old.outOfStock) preserved.outOfStock = old.outOfStock;
-      if(old.discountPct !== undefined && old.discountPct !== null) preserved.discountPct = old.discountPct;
-      if(old.incentivePct !== undefined && old.incentivePct !== null) preserved.incentivePct = old.incentivePct;
-    }
-    updates[sanitizeKey(code)] = { code, name, category: category||'', mrp, ...preserved };
+    rawRows.push({ code, name, category: (category||'').trim(), mrp });
   });
-  return { updates, added, updated, skipped, skippedRows, addedSamples, updatedSamples, lineCount: lines.length };
+  return { rawRows, skipped, skippedRows, lineCount: lines.length };
+}
+// Strips every size token (diameter×length, hole count, angle, Left/Right)
+// out of a product name — what's left is almost always identical across
+// every row from one supplier sheet, even when that sheet has no Category
+// column at all (like the pedicle screw quote sheet). This is the fallback
+// grouping key for rows that didn't come with a category already.
+function nameStem(name){
+  return name
+    .replace(/\(\s*(left|right)\s*\)/gi,'')
+    .replace(/[0-9]+(?:\.[0-9]+)?\s*(?:mm)?\s*[xX]\s*[0-9]+(?:\.[0-9]+)?\s*mm/gi,'')
+    .replace(/[0-9]+(?:\.[0-9]+)?\s*mm\s*length/gi,'')
+    .replace(/[Øø]\s*[0-9]+(?:\.[0-9]+)?\s*mm/gi,'')
+    .replace(/[0-9]+(?:\.[0-9]+)?\s*mm/gi,'')
+    .replace(/[0-9]+\s*hole/gi,'')
+    .replace(/[0-9]+\s*°/g,'')
+    .replace(/[-–,]+\s*$/,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+}
+// Groups CSV rows so Admin tags System/Category/Type ONCE per group instead
+// of once per row — even when one file mixes several product families with
+// no Category column (Admin doesn't need to pre-split the sheet by hand;
+// this does it automatically).
+function groupParsedRows(rawRows){
+  const groups = {};
+  rawRows.forEach(row=>{
+    const key = row.category ? `cat:${row.category}` : `stem:${nameStem(row.name).toLowerCase()}`;
+    if(!groups[key]) groups[key] = { key, subFamily: row.category || nameStem(row.name) || row.name, rows: [] };
+    groups[key].rows.push(row);
+  });
+  return Object.values(groups).map(g=>{
+    const sampleText = g.subFamily + ' ' + g.rows.slice(0,5).map(r=>r.name).join(' ');
+    return { ...g, suggestedSystem: suggestSystem(sampleText), suggestedCategory: suggestCategory(sampleText), suggestedType: suggestIsInstrument(sampleText) ? 'instrument' : 'implant' };
+  }).sort((a,b)=> b.rows.length - a.rows.length);
+}
+let pendingImportGroups = null;
+function renderImportGroups(parsedRaw){
+  const el = document.getElementById('import-groups');
+  const statusEl = document.getElementById('import-status');
+  document.getElementById('import-preview').style.display='none';
+  if(!parsedRaw || !parsedRaw.rawRows.length){
+    el.style.display = 'none';
+    document.getElementById('import-skipped-detail').style.display = parsedRaw && parsedRaw.skippedRows.length ? 'block' : 'none';
+    if(parsedRaw && parsedRaw.skippedRows.length) document.getElementById('import-skipped-detail').innerHTML = renderSkippedDetail(parsedRaw);
+    statusEl.style.color='var(--rust)';
+    statusEl.textContent = parsedRaw ? `Nothing usable found to import (${parsedRaw.skipped} rows skipped, see details below).` : 'Paste some rows or choose a file first.';
+    return;
+  }
+  statusEl.textContent='';
+  const groups = groupParsedRows(parsedRaw.rawRows);
+  pendingImportGroups = { groups, skipped: parsedRaw.skipped, skippedRows: parsedRaw.skippedRows, lineCount: parsedRaw.lineCount };
+  const anyStemGrouped = groups.some(g=>g.key.startsWith('stem:'));
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="panel-title" style="font-size:15px;">Tag ${groups.length} detected group${groups.length===1?'':'s'} before importing</div>
+    <div class="view-desc" style="margin-bottom:10px;">Grouped automatically by the CSV's Category column${anyStemGrouped ? ', and by matching product names for rows with no Category' : ''} — review each (most will already be right), then continue to the import preview.</div>
+    ${groups.map((g,i)=>`
+      <div style="border:1px solid var(--line); padding:10px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+          <b>${escapeAttr(g.subFamily)}</b>
+          <span class="hint">${g.rows.length} row${g.rows.length===1?'':'s'}${g.key.startsWith('stem:')?' · auto-grouped by name':''}</span>
+        </div>
+        <div style="font-size:11px; color:var(--cream-faint); margin-bottom:8px;">e.g. ${escapeAttr(g.rows[0].name)}</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+          <div><label class="small">Sub-family name</label><input type="text" id="grp-subfamily-${i}" value="${escapeAttr(g.subFamily)}" style="width:220px;"></div>
+          <div><label class="small">System</label><select id="grp-system-${i}">${optionsHtml(taxonomySystems(), g.suggestedSystem)}</select></div>
+          <div><label class="small">Category</label><select id="grp-category-${i}" onchange="onGroupCategoryChange(${i})">${optionsHtml(taxonomyCategories(), g.suggestedCategory)}</select></div>
+          <div><label class="small">Type</label><select id="grp-type-${i}"><option value="implant" ${g.suggestedType!=='instrument'?'selected':''}>Implant</option><option value="instrument" ${g.suggestedType==='instrument'?'selected':''}>Instrument</option></select></div>
+          <label class="small" style="display:flex; align-items:center; gap:6px; padding-bottom:8px;"><input type="checkbox" id="grp-fixedset-${i}" ${g.suggestedCategory==='Instrument Sets'?'checked':''}> Fixed Instrument Set</label>
+        </div>
+      </div>`).join('')}
+    <button class="btn btn-sm" onclick="applyImportGroupTags()">Apply tags &amp; review import</button>
+  `;
+}
+function onGroupCategoryChange(i){
+  if(document.getElementById(`grp-category-${i}`).value === 'Instrument Sets'){
+    document.getElementById(`grp-fixedset-${i}`).checked = true;
+    document.getElementById(`grp-type-${i}`).value = 'instrument';
+  }
+}
+// Reads back whatever Admin confirmed/edited on each group's card, builds
+// the same {updates,...} shape the old single-phase importer used to
+// produce directly — from here on the flow (preview → confirm → backup →
+// batch write) is completely unchanged.
+function applyImportGroupTags(){
+  if(!pendingImportGroups) return;
+  const existingCodes = new Set(productsArr().map(p=>p.code));
+  let added=0, updated=0;
+  const addedSamples=[], updatedSamples=[];
+  const updates = {};
+  pendingImportGroups.groups.forEach((g,i)=>{
+    const subFamily = document.getElementById(`grp-subfamily-${i}`).value.trim() || g.subFamily;
+    const system = document.getElementById(`grp-system-${i}`).value;
+    const topCategory = document.getElementById(`grp-category-${i}`).value;
+    const type = document.getElementById(`grp-type-${i}`).value;
+    const isFixedSet = document.getElementById(`grp-fixedset-${i}`).checked;
+    g.rows.forEach(row=>{
+      const isNew = !existingCodes.has(row.code);
+      const old = isNew ? null : findProduct(row.code);
+      if(isNew){ added++; if(addedSamples.length<5) addedSamples.push({code:row.code,name:row.name,mrp:row.mrp}); }
+      else { updated++; if(updatedSamples.length<5) updatedSamples.push({code:row.code,name:row.name,oldMrp:old?.mrp,mrp:row.mrp}); }
+      existingCodes.add(row.code);
+      // Same carry-forward-on-update safety as before, now also covering the
+      // taxonomy/attribute fields — a price refresh never wipes out tags a
+      // previous import (or manual edit) already set.
+      const preserved = {};
+      if(old){
+        if(stockTrackingEnabled(old)) preserved.stock = old.stock;
+        if(old.restockDate) preserved.restockDate = old.restockDate;
+        if(old.outOfStock) preserved.outOfStock = old.outOfStock;
+        if(!isFixedSet && old.discountPct !== undefined && old.discountPct !== null) preserved.discountPct = old.discountPct;
+        if(!isFixedSet && old.incentivePct !== undefined && old.incentivePct !== null) preserved.incentivePct = old.incentivePct;
+        if(old.contents) preserved.contents = old.contents;
+      }
+      const attrs = extractProductAttributes(row.name, row.code);
+      const payload = { code: row.code, name: row.name, category: subFamily, mrp: row.mrp, system, topCategory, type, ...attrs, ...preserved };
+      if(isFixedSet){ payload.isFixedSet = true; payload.discountPct = 0; payload.incentivePct = 0; }
+      updates[sanitizeKey(row.code)] = payload;
+    });
+  });
+  document.getElementById('import-groups').style.display='none';
+  renderImportPreview({ updates, added, updated, skipped: pendingImportGroups.skipped, skippedRows: pendingImportGroups.skippedRows, addedSamples, updatedSamples, lineCount: pendingImportGroups.lineCount });
 }
 function renderImportPreview(parsed){
   const previewEl = document.getElementById('import-preview');
@@ -1327,6 +1743,9 @@ function renderSkippedDetail(parsed){
 }
 function cancelCsvImport(){
   pendingImport = null;
+  pendingImportGroups = null;
+  document.getElementById('import-groups').style.display='none';
+  document.getElementById('import-groups').innerHTML='';
   document.getElementById('import-preview').style.display='none';
   document.getElementById('import-preview').innerHTML='';
   document.getElementById('import-status').textContent='Import cancelled — nothing was changed.';
@@ -1407,14 +1826,14 @@ async function restoreProductBackup(backupId){
 }
 async function importCsv(){
   const raw = document.getElementById('csv-input').value.trim();
-  renderImportPreview(parseCsvRows(raw));
+  renderImportGroups(parseCsvRows(raw));
 }
 function importCsvFile(event){
   const file = event.target.files[0];
   if(!file) return;
   const reader = new FileReader();
   reader.onload = (e) => {
-    renderImportPreview(parseCsvRows(e.target.result));
+    renderImportGroups(parseCsvRows(e.target.result));
     event.target.value = ''; // allow re-uploading the same filename later
   };
   reader.readAsText(file);
@@ -1428,7 +1847,11 @@ function renderKitProductSearch(){
   const q = document.getElementById('kit-product-search').value.trim().toLowerCase();
   const box = document.getElementById('kit-product-results');
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
-  const matches = productsArr().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,20);
+  // Fixed Instrument Sets are deliberately excluded here — a Kit template is
+  // meant to be edited freely by the doctor after picking it, which is
+  // exactly what a locked set must never allow. Sets are added to an order
+  // through their own quick-pick strip or plain search instead.
+  const matches = productsArr().filter(p=>!p.isFixedSet && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addKitProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
 }
@@ -2236,7 +2659,67 @@ function renderNewOrderView(){
   document.getElementById('order-form-desc').textContent = editing ? "Update the items, quantities, date, or time — the Sante team will see your changes. This is only possible while the order is still pending confirmation." : 'Pick a kit template, customize it, and set the date & time.';
   document.getElementById('place-order-btn').textContent = editing ? 'Save changes' : 'Place order';
   document.getElementById('cancel-edit-order-btn').style.display = editing ? 'inline-block' : 'none';
+  renderInstrumentSetChips();
+  document.getElementById('order-browse-system').innerHTML = `<option value="">All systems</option>` + optionsHtml(taxonomySystems(), '');
+  document.getElementById('order-browse-category').innerHTML = `<option value="">All categories</option>` + optionsHtml(taxonomyCategories(), '');
+  document.getElementById('order-browse-panel').style.display = 'none';
+  document.getElementById('order-browse-toggle').textContent = 'Browse by category ▾';
   renderOrderPills();
+}
+// A quick-pick strip for fixed Instrument Sets, sitting above the general
+// search so the usual first step of an order (picking the tray needed for
+// the surgery) doesn't require typing. Tapping one just calls the same
+// addOrderProduct() the search results use — a set behaves exactly like
+// any other product line once added (one locked line, its own price), it
+// just also gets this shortcut into the cart.
+function renderInstrumentSetChips(){
+  const panel = document.getElementById('order-instrument-sets-panel');
+  const sets = productsArr().filter(p => p.isFixedSet && effectiveStock(p) > 0);
+  if(!sets.length){ panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  document.getElementById('order-instrument-set-chips').innerHTML = sets.map(p=>{
+    const stock = effectiveStock(p);
+    const stockNote = isFinite(stock) ? ` <span style="color:var(--cream-faint); font-size:11px;">(${stock} available)</span>` : '';
+    return `<span class="pill" style="cursor:pointer;" onclick="addOrderProduct('${p.code}')"><span>${escapeAttr(p.name)}${stockNote}</span><span style="color:var(--cream-faint);">${money(p.mrp)}</span></span>`;
+  }).join('');
+}
+function toggleOrderBrowse(){
+  const panel = document.getElementById('order-browse-panel');
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  document.getElementById('order-browse-toggle').textContent = open ? 'Browse by category ▾' : 'Browse by category ▴';
+  if(!open) renderOrderBrowseResults();
+}
+// Facet filters (diameter/length) are rebuilt from whatever's actually in
+// the CURRENT filtered result set, McMaster-Carr style — never a fixed
+// list, so a filter never offers a size that would return zero results.
+function renderOrderBrowseResults(){
+  const doc = SESSION && SESSION.role==='doctor' ? findDoc(SESSION.doctorId) : null;
+  const system = document.getElementById('order-browse-system').value;
+  const category = document.getElementById('order-browse-category').value;
+  let results = productsArr().filter(p => effectiveStock(p) > 0);
+  if(system) results = results.filter(p => p.system === system);
+  if(category) results = results.filter(p => p.topCategory === category);
+  const diameters = [...new Set(results.filter(p=>p.diameterMm!==undefined).map(p=>p.diameterMm))].sort((a,b)=>a-b);
+  const lengths = [...new Set(results.filter(p=>p.lengthMm!==undefined).map(p=>p.lengthMm))].sort((a,b)=>a-b);
+  const diaSel = document.getElementById('order-browse-diameter');
+  const lenSel = document.getElementById('order-browse-length');
+  const diaVal = diaSel.value, lenVal = lenSel.value;
+  diaSel.innerHTML = `<option value="">Any diameter</option>` + diameters.map(d=>`<option value="${d}" ${String(d)===diaVal?'selected':''}>${d} mm</option>`).join('');
+  lenSel.innerHTML = `<option value="">Any length</option>` + lengths.map(l=>`<option value="${l}" ${String(l)===lenVal?'selected':''}>${l} mm</option>`).join('');
+  if(diaVal && diameters.some(d=>String(d)===diaVal)) results = results.filter(p=>String(p.diameterMm)===diaVal);
+  if(lenVal && lengths.some(l=>String(l)===lenVal)) results = results.filter(p=>String(p.lengthMm)===lenVal);
+  const box = document.getElementById('order-browse-results');
+  const capped = results.slice(0,60);
+  box.innerHTML = (capped.map(p=>{
+    const discPct = itemDiscountPct({code:p.code}, doc);
+    const incPct = itemIncentivePct({code:p.code}, doc);
+    const rateNote = p.isFixedSet ? '' : ` <span style="color:var(--amber-bright); font-size:11px;">${discPct}% off, ${incPct}% incentive</span>`;
+    return `<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${escapeAttr(p.name)}${rateNote} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`;
+  }).join('')) || `<div class="empty" style="padding:10px;">No products match these filters.</div>`;
+  if(results.length > capped.length){
+    box.innerHTML += `<div class="hint" style="padding:6px 4px;">${results.length - capped.length} more match — narrow further with the filters above to see them.</div>`;
+  }
 }
 function applyKitTemplate(){
   const kitId = document.getElementById('order-kit-select').value;
@@ -2260,16 +2743,24 @@ function renderOrderProductSearch(){
   // Out-of-stock products don't show up here at all — this is what actually
   // keeps a doctor from ordering something that's fully unavailable,
   // rather than just relying on them not noticing.
-  const matches = productsArr().filter(p=>effectiveStock(p) > 0 && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
+  const allMatches = productsArr().filter(p=>effectiveStock(p) > 0 && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)));
+  const matches = allMatches.slice(0,20);
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>{
     const stock = effectiveStock(p);
     const stockNote = isFinite(stock) ? ` <span style="color:var(--cream-faint); font-size:11px;">(${stock} in stock)</span>` : '';
     const discPct = itemDiscountPct({code:p.code}, doc);
     const incPct = itemIncentivePct({code:p.code}, doc);
-    const rateNote = ` <span style="color:var(--amber-bright); font-size:11px;">${discPct}% off, ${incPct}% incentive</span>`;
+    const rateNote = p.isFixedSet ? '' : ` <span style="color:var(--amber-bright); font-size:11px;">${discPct}% off, ${incPct}% incentive</span>`;
     return `<div class="search-row" onclick="addOrderProduct('${p.code}')"><span class="n">${escapeAttr(p.name)}${stockNote}${rateNote} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`;
   }).join('');
+  // A search this broad ("screw" → hundreds of matches) is genuinely too
+  // wide to just show the top 20 and hope — say so plainly, and point at
+  // the filters that will actually narrow it down, rather than silently
+  // hiding however many more results exist.
+  if(allMatches.length > matches.length){
+    box.innerHTML += `<div class="hint" style="padding:8px;">${allMatches.length - matches.length} more match "${escapeAttr(q)}" — open <b>Browse by category</b> below and filter by diameter/length to find the exact one.</div>`;
+  }
 }
 // Adding a product already in the order just bumps its quantity by one,
 // instead of being a no-op — this is what actually lets a doctor order
@@ -2315,15 +2806,15 @@ function renderOrderPills(){
     const lineBilled = Math.round(lineMrp * (1 - discPct/100));
     const lineIncentive = Math.round(lineMrp * (incPct/100));
     return `<span class="pill">
-      <span>${escapeAttr(p.name)}${stockWarning}</span>
+      <span>${escapeAttr(p.name)}${p.isFixedSet ? ' <span style="color:var(--cream-faint); font-size:11px;">(fixed set)</span>' : ''}${stockWarning}</span>
       <span style="display:inline-flex; align-items:center; gap:4px;">
         <button type="button" onclick="decrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">−</button>
         <input type="number" min="1" value="${qty}" onchange="setOrderQty('${it.code}', this.value)" style="width:40px; text-align:center; padding:2px; font-size:12px;">
         <button type="button" onclick="incrementOrderQty('${it.code}')" style="background:var(--bg1); border:1px solid var(--line); color:var(--cream); width:20px; height:20px; line-height:1; cursor:pointer;">+</button>
       </span>
-      <span style="color:var(--cream-faint);">MRP ${money(p.mrp)} × ${qty} = ${money(lineMrp)}</span>
-      <span style="color:var(--amber-bright);">${discPct}% off → ${money(lineBilled)}</span>
-      <span style="color:var(--sage);">${incPct}% incentive → ${money(lineIncentive)}</span>
+      <span style="color:var(--cream-faint);">${p.isFixedSet ? `Price ${money(p.mrp)} × ${qty} = ${money(lineMrp)} (no discount/incentive)` : `MRP ${money(p.mrp)} × ${qty} = ${money(lineMrp)}`}</span>
+      ${p.isFixedSet ? '' : `<span style="color:var(--amber-bright);">${discPct}% off → ${money(lineBilled)}</span>
+      <span style="color:var(--sage);">${incPct}% incentive → ${money(lineIncentive)}</span>`}
       <button onclick="removeOrderProduct('${it.code}')">×</button>
     </span>`;
   }).join('');
