@@ -374,6 +374,7 @@
             <select id="product-filter-system" onchange="productPage=1; renderProductTable()"><option value="">All systems</option></select>
             <select id="product-filter-category" onchange="productPage=1; renderProductTable()"><option value="">All categories</option></select>
             <select id="product-filter-type" onchange="productPage=1; renderProductTable()"><option value="">Implants &amp; instruments</option><option value="implant">Implants only</option><option value="instrument">Instruments only</option></select>
+            <select id="product-filter-archived" onchange="productPage=1; renderProductTable()"><option value="active">Active only</option><option value="all">Active + archived</option><option value="archived">Archived only</option></select>
             <button class="btn btn-outline btn-sm" id="retag-btn" onclick="retagLegacyProducts()">Auto-tag untagged products</button>
           </div>
           <span class="view-desc" id="product-count"></span>
@@ -1142,10 +1143,60 @@ function billableQty(it){ return Math.max(0, (it.qty||1) - (it.unavailableQty ||
 // order time — that portion is excluded from billing entirely. A doctor
 // shouldn't be charged (or earn incentive) on units that aren't actually
 // being fulfilled.
+/* ============================================================
+   ORDER PRICE SNAPSHOTS
+   An order line records the price and rates that applied AT THE MOMENT it
+   was placed (mrpAtOrder / discountPctAtOrder / incentivePctAtOrder /
+   nameAtOrder / isFixedSetAtOrder). Every money figure below reads those
+   locked values first and only falls back to the live catalog when they're
+   absent.
+
+   Why this matters: before snapshots, totals were recomputed from the
+   CURRENT catalog every time they were displayed. Re-importing a price
+   list silently rewrote every past order's bill, incentive and the
+   doctor's outstanding balance — and deleting a product made its line
+   worth ₹0, shrinking historical invoices. Locked values make an order an
+   immutable financial record, exactly like a real invoice.
+
+   Orders placed BEFORE this change have no snapshot fields, so they
+   transparently fall back to live lookup and behave exactly as they did.
+============================================================ */
+function itemMrp(it){
+  if(it && it.mrpAtOrder !== undefined && it.mrpAtOrder !== null) return it.mrpAtOrder;
+  return findProduct(it.code)?.mrp || 0;
+}
+function itemName(it){
+  if(it && it.nameAtOrder) return it.nameAtOrder;
+  return findProduct(it.code)?.name || it.code;
+}
+function itemIsFixedSet(it){
+  if(it && it.isFixedSetAtOrder !== undefined && it.isFixedSetAtOrder !== null) return !!it.isFixedSetAtOrder;
+  return !!findProduct(it.code)?.isFixedSet;
+}
+// True once a line carries locked pricing — used to show Admin that an
+// order's figures are historical and won't move with the catalog.
+function itemHasSnapshot(it){ return !!(it && it.mrpAtOrder !== undefined && it.mrpAtOrder !== null); }
+function orderHasSnapshot(o){ return orderItems(o).some(itemHasSnapshot); }
+// Builds the locked record for each line at placement/save time.
+function snapshotOrderItems(items, doc){
+  return items.map(it=>{
+    const p = findProduct(it.code);
+    const snap = { code: it.code, qty: it.qty || 1 };
+    if(it.unavailable) snap.unavailable = it.unavailable;
+    if(p){
+      snap.mrpAtOrder = p.mrp || 0;
+      snap.nameAtOrder = p.name || it.code;
+      snap.discountPctAtOrder = itemDiscountPctLive(it, doc);
+      snap.incentivePctAtOrder = itemIncentivePctLive(it, doc);
+      snap.isFixedSetAtOrder = !!p.isFixedSet;
+    }
+    return snap;
+  });
+}
+
 function orderMrpTotal(o){
   return Math.round(orderItems(o).reduce((s,it)=>{
-    const p = findProduct(it.code);
-    return s + (p?.mrp||0) * billableQty(it);
+    return s + itemMrp(it) * billableQty(it);
   }, 0));
 }
 // Discount and incentive rates can be set at three levels, checked in this
@@ -1167,7 +1218,10 @@ function effectiveDiscountPct(o){
   if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
   return doc?.incentivePct || 0;
 }
-function itemDiscountPct(it, doc){
+// The "Live" variants read today's catalog/doctor rates — these are what
+// get frozen into a line at placement time. The snapshot-aware wrappers
+// below are what every display and money calculation actually uses.
+function itemDiscountPctLive(it, doc){
   const p = findProduct(it.code);
   // A fixed instrument set is never discounted and never earns incentive —
   // this is enforced here unconditionally, not just by leaving discountPct
@@ -1178,11 +1232,19 @@ function itemDiscountPct(it, doc){
   if(doc && doc.discountPct !== undefined && doc.discountPct !== null) return doc.discountPct;
   return doc?.incentivePct || 0;
 }
-function itemIncentivePct(it, doc){
+function itemIncentivePctLive(it, doc){
   const p = findProduct(it.code);
   if(p && p.isFixedSet) return 0;
   if(p && p.incentivePct !== undefined && p.incentivePct !== null) return p.incentivePct;
   return doc?.incentivePct || 0;
+}
+function itemDiscountPct(it, doc){
+  if(it && it.discountPctAtOrder !== undefined && it.discountPctAtOrder !== null) return it.discountPctAtOrder;
+  return itemDiscountPctLive(it, doc);
+}
+function itemIncentivePct(it, doc){
+  if(it && it.incentivePctAtOrder !== undefined && it.incentivePctAtOrder !== null) return it.incentivePctAtOrder;
+  return itemIncentivePctLive(it, doc);
 }
 function orderDiscountAmount(o){
   // A manual whole-order override bypasses per-product rates entirely —
@@ -1197,16 +1259,14 @@ function orderDiscountAmount(o){
   // totals to the old per-order calculation — no new rounding drift for
   // the common case where nobody's set a per-product rate.
   const raw = orderItems(o).reduce((s,it)=>{
-    const p = findProduct(it.code);
-    return s + (p?.mrp||0) * billableQty(it) * (itemDiscountPct(it,doc)/100);
+    return s + itemMrp(it) * billableQty(it) * (itemDiscountPct(it,doc)/100);
   }, 0);
   return Math.round(raw);
 }
 function orderIncentive(o){
   const doc = findDoc(o.doctorId);
   const raw = orderItems(o).reduce((s,it)=>{
-    const p = findProduct(it.code);
-    return s + (p?.mrp||0) * billableQty(it) * (itemIncentivePct(it,doc)/100);
+    return s + itemMrp(it) * billableQty(it) * (itemIncentivePct(it,doc)/100);
   }, 0);
   return Math.round(raw);
 }
@@ -1415,6 +1475,11 @@ function renderProductTable(){
   if(sysFilter) rows = rows.filter(p => p.system === sysFilter);
   if(catFilter) rows = rows.filter(p => p.topCategory === catFilter);
   if(typeFilter) rows = rows.filter(p => (p.type||'implant') === typeFilter);
+  // Archived products are hidden by default so the working list reflects
+  // what doctors can actually order.
+  const archivedFilter = document.getElementById('product-filter-archived')?.value || 'active';
+  if(archivedFilter === 'active') rows = rows.filter(p => !p.archived);
+  else if(archivedFilter === 'archived') rows = rows.filter(p => !!p.archived);
   const untaggedCount = all.filter(p => !p.topCategory).length;
   const totalPages = Math.max(1, Math.ceil(rows.length / PRODUCTS_PER_PAGE));
   if(productPage > totalPages) productPage = totalPages;
@@ -1466,10 +1531,10 @@ function renderProductTable(){
     const hasOwnDiscount = p.discountPct!==undefined && p.discountPct!==null;
     const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
     const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null].filter(Boolean);
-    return `<tr>
+    return `<tr${p.archived ? ' style="opacity:0.55;"' : ''}>
       <td class="num">${rowNum}</td>
       <td class="num">${p.code}</td>
-      <td>${p.name}</td>
+      <td>${p.name}${p.archived ? ' <span class="badge deleted">Archived</span>' : ''}</td>
       <td>${p.category}${tagBits.length ? `<br><span style="font-size:10.5px; color:var(--cream-faint);">${tagBits.join(' · ')}</span>` : ''}</td>
       <td class="num" style="text-align:right;">${money(p.mrp)}</td>
       <td style="text-align:center;">${stockDisplay}</td>
@@ -1478,7 +1543,10 @@ function renderProductTable(){
       <td class="num" style="text-align:center;">${p.isFixedSet ? '<span style="color:var(--cream-faint);">n/a</span>' : hasOwnIncentive ? `<span style="color:var(--amber-bright);">${p.incentivePct}%</span>` : '<span style="color:var(--cream-faint);">doctor default</span>'}</td>
       <td style="white-space:nowrap;">
         <button class="btn btn-outline btn-sm" onclick="startEditProduct('${p.id}')">Edit</button>
-        <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
+        ${p.archived
+          ? `<button class="btn btn-outline btn-sm" onclick="restoreProduct('${p.id}')" style="color:var(--sage);">Restore</button>`
+          : `<button class="btn btn-outline btn-sm" onclick="archiveProduct('${p.id}')" title="Hide from doctors without affecting past orders">Archive</button>
+             <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>`}
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="10" class="empty">${emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untaggedCount, total: all.length})}</td></tr>`;
@@ -1511,6 +1579,11 @@ async function saveProduct(id){
   const contents = document.getElementById(`edit-p-contents-${id}`)?.value.trim() || '';
   if(!code || !name){ alert('Code and name are required.'); return; }
   const payload = { code, name, category, mrp };
+  // Archiving is controlled by the Archive/Restore buttons, not this form —
+  // carry the flag through so an ordinary edit can't silently put an
+  // archived product back in front of doctors.
+  const existing = productsArr().find(x=>x.id===id);
+  if(existing && existing.archived) payload.archived = true;
   // Leaving a rate field blank means "use the doctor's default", exactly
   // like leaving Stock blank means "untracked" — an explicit number (even
   // 0) turns on a rate specific to this product. This is a full .set()
@@ -1549,15 +1622,44 @@ async function saveProduct(id){
     alert('Could not save changes: ' + err.message);
   }
 }
+// A product that appears in ANY order (including deleted ones, which Admin
+// can still review) must never be removed outright. Archiving hides it from
+// all ordering surfaces while leaving the record intact, so historical
+// orders keep resolving their product details.
+function productUsedInOrders(code){
+  return ordersArr().some(o => orderItems(o).some(it => it.code === code));
+}
 async function deleteProduct(id){
   const p = productsArr().find(x=>x.id===id);
-  if(!confirm(`Delete product "${p ? p.name : id}"? This cannot be undone.`)) return;
+  if(!p) return;
+  const inUse = productUsedInOrders(p.code);
+  if(inUse){
+    if(!confirm(`"${p.name}" appears in past orders, so it can't be deleted — deleting it would corrupt those orders' totals.\n\nArchive it instead? It will disappear from the doctors' catalog immediately, while past orders keep their correct values. You can restore it at any time.`)) return;
+    try{
+      await db.ref('products/'+id+'/archived').set(true);
+    }catch(err){ alert('Could not archive: ' + err.message); }
+    return;
+  }
+  const choice = confirm(`"${p.name}" has never been ordered.\n\nOK = delete it permanently.\nCancel = keep it (you can archive it instead from Edit).`);
+  if(!choice) return;
   try{
     await db.ref('products/'+id).remove();
   }catch(err){
     alert('Could not delete: ' + err.message);
   }
 }
+async function archiveProduct(id){
+  try{ await db.ref('products/'+id+'/archived').set(true); }
+  catch(err){ alert('Could not archive: ' + err.message); }
+}
+async function restoreProduct(id){
+  try{ await db.ref('products/'+id+'/archived').set(null); }
+  catch(err){ alert('Could not restore: ' + err.message); }
+}
+// The single source of truth for "can this be ordered right now" — used by
+// every doctor-facing catalog surface so an archived product can't be
+// added to a new order from anywhere.
+function isOrderableProduct(p){ return p && !p.archived; }
 function detectDelimiter(sampleLine){
   // Copy-pasting cells directly out of Excel puts TABS between columns, not
   // commas — only a real exported .csv file uses commas. Auto-detecting this
@@ -1746,6 +1848,9 @@ function applyImportGroupTags(){
         if(!isFixedSet && old.discountPct !== undefined && old.discountPct !== null) preserved.discountPct = old.discountPct;
         if(!isFixedSet && old.incentivePct !== undefined && old.incentivePct !== null) preserved.incentivePct = old.incentivePct;
         if(old.contents) preserved.contents = old.contents;
+        // A routine price refresh must not resurrect a product that was
+        // deliberately archived.
+        if(old.archived) preserved.archived = true;
       }
       const attrs = extractProductAttributes(row.name, row.code);
       const payload = { code: row.code, name: row.name, category: subFamily, mrp: row.mrp, system, topCategory, type, ...attrs, ...preserved };
@@ -1905,7 +2010,7 @@ function renderKitProductSearch(){
   // meant to be edited freely by the doctor after picking it, which is
   // exactly what a locked set must never allow. Sets are added to an order
   // through their own quick-pick strip or plain search instead.
-  const matches = productsArr().filter(p=>!p.isFixedSet && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
+  const matches = productsArr().filter(p=>isOrderableProduct(p) && !p.isFixedSet && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q))).slice(0,20);
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>`<div class="search-row" onclick="addKitProduct('${p.code}')"><span class="n">${p.name} <span style="color:var(--cream-faint)">(${p.code})</span></span><span class="p">${money(p.mrp)}</span></div>`).join('');
 }
@@ -2198,13 +2303,15 @@ function renderAdminOrders(){
         const unavailQty = it.unavailableQty || 0;
         const billable = billableQty(it);
         const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
-        if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="7" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td></tr>`;
+        if(!p && !itemHasSnapshot(it)) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="7" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td></tr>`;
         const lineDiscPct = o.discountPctOverride!==undefined && o.discountPctOverride!==null ? o.discountPctOverride : itemDiscountPct(it, doc);
         const lineIncPct = itemIncentivePct(it, doc);
-        const usesOwnRate = p.discountPct !== undefined && p.discountPct !== null;
-        return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${it.autoFlagged ? ` <span style="color:var(--amber-bright); font-size:11px;">(auto-flagged: stock ran short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td style="text-align:center; white-space:nowrap;">
+        const usesOwnRate = p && p.discountPct !== undefined && p.discountPct !== null;
+        const unitMrp = itemMrp(it);
+        const archivedNote = !p ? ` <span style="color:var(--cream-faint); font-size:11px;">(archived — price locked)</span>` : '';
+        return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(it.code)}</td><td>${escapeAttr(itemName(it))}${archivedNote}${it.autoFlagged ? ` <span style="color:var(--amber-bright); font-size:11px;">(auto-flagged: stock ran short)</span>` : ''}</td><td>${escapeAttr(p?.category||'—')}</td><td class="num" style="text-align:center;">${qty}</td><td style="text-align:center; white-space:nowrap;">
           <input type="number" min="0" max="${qty}" value="${unavailQty}" style="width:56px; text-align:center;" onchange="setItemUnavailableQty('${o.id}',${i},this.value)">
-        </td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:center;" title="${usesOwnRate?'This product has its own rate':'Using doctor default'}">${lineDiscPct}%${usesOwnRate?' •':''}</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
+        </td><td class="num" style="text-align:right;">${money(unitMrp)}</td><td class="num" style="text-align:center;" title="${usesOwnRate?'This product has its own rate':'Using doctor default'}">${lineDiscPct}%${usesOwnRate?' •':''}</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(unitMrp*billable)}</td></tr>`;
       }).join('')}
       <tr><td colspan="9" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL (excludes unavailable units)</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
     </tbody></table></div>
@@ -2605,10 +2712,15 @@ function orderCardHtml(o){
       const unavailQty = it.unavailableQty || 0;
       const billable = billableQty(it);
       const strike = unavailQty>0 ? 'color:var(--cream-faint);' : '';
-      if(!p) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="6" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
+      // With a price snapshot present the line renders fully from the
+      // locked record, so an archived or removed product still shows its
+      // correct historical name and value instead of collapsing to ₹0.
+      if(!p && !itemHasSnapshot(it)) return `<tr><td class="num">${i+1}</td><td class="num" style="color:var(--rust);">${escapeAttr(it.code)}</td><td colspan="6" style="color:var(--rust);">Product no longer in catalog (qty ${qty})</td><td></td></tr>`;
       const lineDiscPct = o.discountPctOverride!==undefined && o.discountPctOverride!==null ? o.discountPctOverride : itemDiscountPct(it, doc);
       const lineIncPct = itemIncentivePct(it, doc);
-      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(p.code)}</td><td>${escapeAttr(p.name)}${unavailQty>0 ? ` <span style="color:var(--rust); font-size:11px;">(${unavailQty} of ${qty} short)</span>` : ''}</td><td>${escapeAttr(p.category)}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(p.mrp)}</td><td class="num" style="text-align:center;">${lineDiscPct}%</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(p.mrp*billable)}</td></tr>`;
+      const unitMrp = itemMrp(it);
+      const archivedNote = !p ? ` <span style="color:var(--cream-faint); font-size:11px;">(archived product — price locked from order date)</span>` : '';
+      return `<tr style="${strike}"><td class="num">${i+1}</td><td class="num">${escapeAttr(it.code)}</td><td>${escapeAttr(itemName(it))}${archivedNote}${unavailQty>0 ? ` <span style="color:var(--rust); font-size:11px;">(${unavailQty} of ${qty} short)</span>` : ''}</td><td>${escapeAttr(p?.category||'—')}</td><td class="num" style="text-align:center;">${qty}</td><td class="num" style="text-align:right;">${money(unitMrp)}</td><td class="num" style="text-align:center;">${lineDiscPct}%</td><td class="num" style="text-align:center;">${lineIncPct}%</td><td class="num" style="text-align:right;">${money(unitMrp*billable)}</td></tr>`;
     }).join('')}
     <tr><td colspan="8" style="text-align:right; font-weight:600; color:var(--cream);">TOTAL</td><td class="num" style="text-align:right; font-weight:600;">${money(mrp)}</td></tr>
   </tbody></table></div>`;
@@ -2728,7 +2840,7 @@ function renderNewOrderView(){
 // just also gets this shortcut into the cart.
 function renderInstrumentSetChips(){
   const panel = document.getElementById('order-instrument-sets-panel');
-  const sets = productsArr().filter(p => p.isFixedSet && effectiveStock(p) > 0);
+  const sets = productsArr().filter(p => isOrderableProduct(p) && p.isFixedSet && effectiveStock(p) > 0);
   if(!sets.length){ panel.style.display = 'none'; return; }
   panel.style.display = 'block';
   document.getElementById('order-instrument-set-chips').innerHTML = sets.map(p=>{
@@ -2751,7 +2863,7 @@ function renderOrderBrowseResults(){
   const doc = SESSION && SESSION.role==='doctor' ? findDoc(SESSION.doctorId) : null;
   const system = document.getElementById('order-browse-system').value;
   const category = document.getElementById('order-browse-category').value;
-  let results = productsArr().filter(p => effectiveStock(p) > 0);
+  let results = productsArr().filter(p => isOrderableProduct(p) && effectiveStock(p) > 0);
   if(system) results = results.filter(p => p.system === system);
   if(category) results = results.filter(p => p.topCategory === category);
   const diameters = [...new Set(results.filter(p=>p.diameterMm!==undefined).map(p=>p.diameterMm))].sort((a,b)=>a-b);
@@ -2797,7 +2909,7 @@ function renderOrderProductSearch(){
   // Out-of-stock products don't show up here at all — this is what actually
   // keeps a doctor from ordering something that's fully unavailable,
   // rather than just relying on them not noticing.
-  const allMatches = productsArr().filter(p=>effectiveStock(p) > 0 && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)));
+  const allMatches = productsArr().filter(p=>isOrderableProduct(p) && effectiveStock(p) > 0 && (p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)));
   const matches = allMatches.slice(0,20);
   box.style.display = matches.length ? 'block':'none';
   box.innerHTML = matches.map(p=>{
@@ -2952,9 +3064,15 @@ async function placeOrder(){
     const { unavailableQty } = await reserveStock(draftItem.code, qty);
     items.push({ code: draftItem.code, qty, ...(unavailableQty>0 ? {unavailableQty, autoFlagged:true} : {}) });
   }
+  // Freeze today's price and rates onto every line. From here on this
+  // order's value is fixed — later catalog price changes, rate changes, or
+  // even archiving the product cannot alter what this order is worth.
+  // A pending order being edited is re-snapshotted, which is correct: it
+  // hasn't been committed yet, so it should reflect prices as of the save.
+  const pricedItems = snapshotOrderItems(items, findDoc(SESSION.doctorId));
 
   if(existingOrder){
-    const updatePayload = { items, productCodes:null, date, time };
+    const updatePayload = { items: pricedItems, productCodes:null, date, time };
     if(existingOrder.status === 'needs_review'){
       Object.assign(updatePayload, { status:'confirmed', doctorAcknowledgedUnavailable:true });
     } else if(existingOrder.status === 'awaiting_doctor_approval' && SESSION.accountKey === 'doctor'){
@@ -2988,7 +3106,7 @@ async function placeOrder(){
     doctorId: SESSION.doctorId,
     accountLabel: SESSION.accountLabel,
     orderId,
-    items,
+    items: pricedItems,
     date, time, status: needsApproval ? 'awaiting_doctor_approval' : 'confirmed', createdAt: placedAt.toISOString()
   });
   if(needsApproval){
