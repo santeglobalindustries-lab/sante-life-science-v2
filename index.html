@@ -374,7 +374,7 @@
             <select id="product-filter-system" onchange="productPage=1; renderProductTable()"><option value="">All systems</option></select>
             <select id="product-filter-category" onchange="productPage=1; renderProductTable()"><option value="">All categories</option></select>
             <select id="product-filter-type" onchange="productPage=1; renderProductTable()"><option value="">Implants &amp; instruments</option><option value="implant">Implants only</option><option value="instrument">Instruments only</option></select>
-            <button class="btn btn-outline btn-sm" onclick="retagLegacyProducts()">Auto-tag untagged products</button>
+            <button class="btn btn-outline btn-sm" id="retag-btn" onclick="retagLegacyProducts()">Auto-tag untagged products</button>
           </div>
           <span class="view-desc" id="product-count"></span>
         </div>
@@ -1341,17 +1341,69 @@ async function retagLegacyProducts(){
   const untagged = productsArr().filter(p => !p.topCategory);
   if(!untagged.length){ alert('Every product already has a Category tag — nothing to do.'); return; }
   if(!confirm(`Auto-tag ${untagged.length} product(s) that don't have a System/Category yet? You can still correct any of them by hand afterward.`)) return;
-  const updates = {};
-  untagged.forEach(p=>{
-    const text = `${p.category||''} ${p.name||''}`;
-    updates[`${sanitizeKey(p.code)}/system`] = suggestSystem(text);
-    updates[`${sanitizeKey(p.code)}/topCategory`] = suggestCategory(text);
-    updates[`${sanitizeKey(p.code)}/type`] = suggestIsInstrument(text) ? 'instrument' : 'implant';
-    const attrs = extractProductAttributes(p.name||'', p.code);
-    Object.entries(attrs).forEach(([k,v])=>{ if(p[k]===undefined) updates[`${sanitizeKey(p.code)}/${k}`] = v; });
+  const btn = document.getElementById('retag-btn');
+  const setBtn = (txt, disabled) => { if(btn){ btn.textContent = txt; btn.disabled = !!disabled; } };
+  // Written in batches rather than one giant update(): a full catalog of
+  // ~8,000 products works out to roughly 50,000 individual field paths,
+  // which is far too large for a single Realtime Database write — it would
+  // hang or fail outright, and because one update() is atomic, a failure
+  // would mean NOTHING got tagged. Batching keeps each write small, shows
+  // progress, and means an interruption only costs the current batch —
+  // re-running the button just picks up whatever is still untagged.
+  const BATCH_SIZE = 400;
+  let done = 0;
+  try{
+    for(let i = 0; i < untagged.length; i += BATCH_SIZE){
+      const slice = untagged.slice(i, i + BATCH_SIZE);
+      const updates = {};
+      slice.forEach(p=>{
+        const key = sanitizeKey(p.code);
+        const text = `${p.category||''} ${p.name||''}`;
+        updates[`${key}/system`] = suggestSystem(text);
+        updates[`${key}/topCategory`] = suggestCategory(text);
+        updates[`${key}/type`] = suggestIsInstrument(text) ? 'instrument' : 'implant';
+        const attrs = extractProductAttributes(p.name||'', p.code);
+        Object.entries(attrs).forEach(([k,v])=>{ if(p[k]===undefined) updates[`${key}/${k}`] = v; });
+      });
+      await db.ref('products').update(updates);
+      done += slice.length;
+      setBtn(`Tagging… ${done} of ${untagged.length}`, true);
+    }
+    setBtn('Auto-tag untagged products', false);
+    alert(`Tagged ${done} product(s). Spot-check a few in the table below, and correct any that landed in the wrong category.`);
+  }catch(err){
+    setBtn('Auto-tag untagged products', false);
+    alert(`Tagged ${done} of ${untagged.length} before hitting an error:\n\n${err.message}\n\nThe ${done} already saved are fine — just click the button again to continue with the rest.`);
+  }
+}
+// An empty product table is almost never "there's nothing here" — it's
+// usually a System/Category/Type filter matching nothing because those
+// products haven't been tagged yet. Saying that plainly beats a bare
+// "No matches", which reads like the catalog is broken.
+function emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untaggedCount, total}){
+  const filtersOn = [sysFilter, catFilter, typeFilter].filter(Boolean).length > 0;
+  const clearBtn = `<div style="margin-top:10px;"><button class="btn btn-outline btn-sm" onclick="clearProductFilters()">Clear all filters</button></div>`;
+  if(filtersOn && untaggedCount === total && total > 0){
+    return `<div style="padding:8px;">None of your ${total} products have a System/Category tag yet, so these filters can't match anything.<br><br>
+      Click <b>Auto-tag untagged products</b> above to tag them all in one go — then these filters will work.${clearBtn}</div>`;
+  }
+  if(filtersOn && untaggedCount > 0){
+    return `<div style="padding:8px;">No products match these filters.<br><br>
+      Note that ${untaggedCount} product${untaggedCount===1?" hasn't":"s haven't"} been tagged yet — if what you're looking for is among those, run <b>Auto-tag untagged products</b> above first.${clearBtn}</div>`;
+  }
+  if(filtersOn){
+    return `<div style="padding:8px;">No products match these filters.${clearBtn}</div>`;
+  }
+  if(q) return `<div style="padding:8px;">Nothing matches "${escapeAttr(q)}".</div>`;
+  return 'No products in the catalog yet.';
+}
+function clearProductFilters(){
+  document.getElementById('product-search').value = '';
+  ['product-filter-system','product-filter-category','product-filter-type'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.value = '';
   });
-  await db.ref('products').update(updates);
-  alert(`Tagged ${untagged.length} product(s). Spot-check a few in the table below.`);
+  productPage = 1;
+  renderProductTable();
 }
 function renderProductTable(){
   const q = (document.getElementById('product-search').value||'').toLowerCase();
@@ -1363,10 +1415,12 @@ function renderProductTable(){
   if(sysFilter) rows = rows.filter(p => p.system === sysFilter);
   if(catFilter) rows = rows.filter(p => p.topCategory === catFilter);
   if(typeFilter) rows = rows.filter(p => (p.type||'implant') === typeFilter);
+  const untaggedCount = all.filter(p => !p.topCategory).length;
   const totalPages = Math.max(1, Math.ceil(rows.length / PRODUCTS_PER_PAGE));
   if(productPage > totalPages) productPage = totalPages;
   if(productPage < 1) productPage = 1;
-  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products — page ${productPage} of ${totalPages}`;
+  document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products — page ${productPage} of ${totalPages}`
+    + (untaggedCount ? ` · ${untaggedCount} not tagged yet` : '');
   const pageRows = rows.slice((productPage-1)*PRODUCTS_PER_PAGE, productPage*PRODUCTS_PER_PAGE);
   document.getElementById('product-table-body').innerHTML = pageRows.map((p,i)=>{
     const rowNum = (productPage-1)*PRODUCTS_PER_PAGE + i + 1;
@@ -1427,7 +1481,7 @@ function renderProductTable(){
         <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" class="empty">No matches.</td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">${emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untaggedCount, total: all.length})}</td></tr>`;
   const pagerEl = document.getElementById('product-pagination');
   if(pagerEl){
     pagerEl.innerHTML = totalPages > 1 ? `
