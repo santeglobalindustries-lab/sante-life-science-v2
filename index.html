@@ -333,7 +333,11 @@
           </div>
           <div class="row">
             <div><label class="small">Sub-family / category text</label><input type="text" id="new-p-category" placeholder="e.g. Pedicle Instruments Set"></div>
-            <div><label class="small">Price (₹)</label><input type="number" id="new-p-mrp" placeholder="e.g. 172000"></div>
+            <div><label class="small">Price to doctor (₹) — MRP</label><input type="number" id="new-p-mrp" placeholder="e.g. 172000"></div>
+          </div>
+          <div class="row">
+            <div><label class="small">Supplier <span style="font-weight:400; color:var(--cream-faint);">(admin only — doctors never see this)</span></label><select id="new-p-supplier"><option value="">— None / unknown —</option></select></div>
+            <div><label class="small">Your cost price (₹) <span style="font-weight:400; color:var(--cream-faint);">(admin only)</span></label><input type="number" id="new-p-cost" placeholder="what you paid the supplier"></div>
           </div>
           <div class="row">
             <div><label class="small">System</label><select id="new-p-system"></select></div>
@@ -351,6 +355,16 @@
           </div>
           <button class="btn btn-sm" onclick="createProductManually()">Add product</button>
           <span id="new-p-status" style="font-size:12px; margin-left:10px;"></span>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Manage Suppliers</div>
+          <div class="view-desc" style="margin-bottom:10px;">Each supplier gets a short code auto-generated from its name (first two + last two letters) — this is what tells you, at a glance, who a product came from without a doctor ever seeing it. Edit a code if the auto-generated one isn't to your liking.</div>
+          <div id="suppliers-list" style="margin-bottom:10px;"></div>
+          <div class="row">
+            <div><label class="small">Supplier name</label><input type="text" id="new-supplier-name" placeholder="e.g. Global Orthosys"></div>
+            <div><label class="small">Phone (optional)</label><input type="text" id="new-supplier-phone" placeholder="e.g. +91 9898940227"></div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="addSupplier(document.getElementById('new-supplier-name').value, document.getElementById('new-supplier-phone').value).then(id=>{ if(id){ document.getElementById('new-supplier-name').value=''; document.getElementById('new-supplier-phone').value=''; } })">Add supplier</button>
         </div>
         <div class="panel">
           <div class="panel-title">Manage Systems &amp; Categories</div>
@@ -580,7 +594,7 @@ firebase.auth().signInAnonymously().catch(err => {
 // CHANGE THIS before going live with real doctors.
 const ADMIN_PASSCODE = "SanteAdmin@2026";
 
-let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {}, taxonomy: {} };
+let DB = { products: {}, kits: {}, doctors: {}, orders: {}, payouts: {}, taxonomy: {}, suppliers: {} };
 let SESSION = null; // {role:'admin'} or {role:'doctor', doctorId, accountKey, accountLabel}
 let pendingLogin = null; // {doctorId, accountKey} while mid-login
 let currentView = null;
@@ -682,6 +696,7 @@ function attachListeners(){
     }
     rerenderIfNeeded();
   });
+  db.ref('suppliers').on('value', snap => { DB.suppliers = snap.val() || {}; rerenderIfNeeded(); });
 }
 function rerenderIfNeeded(){
   if(SESSION && currentView) showView(currentView, true);
@@ -751,6 +766,68 @@ function suggestSystem(text){
   return 'Trauma System'; // the largest, general-purpose default bucket
 }
 function suggestIsInstrument(text){ return /instruments?\s*set|\binstrument\b/i.test(text); }
+
+/* ============================================================
+   SUPPLIER MASTER
+   Purely an admin/procurement concern — a supplierId and costPrice on a
+   product are never read by any doctor-facing screen, so "admin-only" is
+   enforced simply by which functions ever look at these fields, not by a
+   separate permission check.
+   Each supplier gets a short code auto-derived from its name (first two +
+   last two letters), so a product's internal identity can carry which
+   supplier it came from — e.g. "GLYS-T610UP.4525" — without a doctor ever
+   seeing "Global Orthosys" or what you paid them. This is also what
+   prevents the silent-overwrite bug: two different suppliers using the
+   same part number for two different physical items no longer collide,
+   because the supplier prefix makes their codes different.
+============================================================ */
+function suppliersArr(){ return Object.entries(DB.suppliers || {}).map(([id,s])=>({id,...s})); }
+function findSupplier(id){ return id && DB.suppliers && DB.suppliers[id] ? {id, ...DB.suppliers[id]} : null; }
+function deriveSupplierCode(name, existingCodes){
+  const clean = name.toUpperCase().replace(/[^A-Z]/g,'');
+  let base = clean.length >= 4 ? clean.slice(0,2) + clean.slice(-2) : clean.padEnd(4,'X').slice(0,4);
+  if(!existingCodes.has(base)) return base;
+  for(let i=2;i<100;i++){ if(!existingCodes.has(base+i)) return base+i; }
+  return base + Date.now().toString(36).slice(-3).toUpperCase();
+}
+async function addSupplier(name, phone){
+  name = (name||'').trim();
+  if(!name) return null;
+  const existing = suppliersArr();
+  if(existing.some(s=>s.name.toLowerCase()===name.toLowerCase())){ alert('A supplier with this name already exists.'); return null; }
+  const code = deriveSupplierCode(name, new Set(existing.map(s=>s.code)));
+  const id = uid('sup');
+  await db.ref('suppliers/'+id).set({ name, code, phone: (phone||'').trim(), createdAt: new Date().toISOString() });
+  return id;
+}
+async function renameSupplierCode(id, newCode){
+  newCode = (newCode||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!newCode) return;
+  const clash = suppliersArr().find(s=>s.id!==id && s.code===newCode);
+  if(clash){ alert(`"${newCode}" is already used by ${clash.name}.`); renderSupplierControls(); return; }
+  await db.ref(`suppliers/${id}/code`).set(newCode);
+}
+async function removeSupplier(id){
+  const inUse = productsArr().some(p=>p.supplierId===id);
+  if(inUse){ alert('This supplier is linked to at least one product — reassign or clear those first.'); return; }
+  await db.ref('suppliers/'+id).remove();
+}
+// Every MRP or cost change is timestamped on the product itself — with a
+// single shared Admin login there's no distinct "who" to record yet (that
+// needs named admin accounts, a separate piece of work), but "what changed
+// and when" is exactly what settles a doctor's billing dispute, and it
+// doesn't depend on that.
+function withPriceHistory(payload, old, via){
+  const changes = [];
+  if(old){
+    if(payload.mrp !== undefined && payload.mrp !== old.mrp) changes.push({field:'mrp', from: old.mrp, to: payload.mrp});
+    if(payload.costPrice !== undefined && payload.costPrice !== old.costPrice) changes.push({field:'costPrice', from: old.costPrice||0, to: payload.costPrice});
+  }
+  if(!changes.length) return payload;
+  const history = Array.isArray(old?.priceHistory) ? old.priceHistory.slice(-19) : [];
+  changes.forEach(c=>history.push({ date: new Date().toISOString(), field: c.field, from: c.from, to: c.to, via }));
+  return { ...payload, priceHistory: history };
+}
 // Pulls real numeric attributes out of a product name so they become
 // filterable facets instead of buried text — validated against the real
 // catalog: ~97% of rows yield a diameter, 63% a length, handles both
@@ -1049,7 +1126,7 @@ function showView(id, silent){
   document.getElementById('v-'+id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===id));
   if(id==='admin-dashboard') renderAdminDashboard();
-  if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); renderTaxonomyControls(); }
+  if(id==='admin-products'){ renderProductTable(); renderCatalogBackups(); renderTaxonomyControls(); renderSupplierControls(); }
   if(id==='admin-kits') renderKitsList();
   if(id==='admin-doctors') renderDoctorsList();
   if(id==='admin-reports') renderAdminReports();
@@ -1353,6 +1430,26 @@ function renderTaxonomyControls(){
   if(newSys) newSys.innerHTML = optionsHtml(systems, newSys.value);
   if(newCat) newCat.innerHTML = optionsHtml(cats, newCat.value);
 }
+function supplierOptionsHtml(selectedId){
+  return suppliersArr().map(s=>`<option value="${s.id}" ${s.id===selectedId?'selected':''}>${escapeAttr(s.name)} (${escapeAttr(s.code)})</option>`).join('');
+}
+function renderSupplierControls(){
+  const listEl = document.getElementById('suppliers-list');
+  const suppliers = suppliersArr();
+  if(listEl){
+    listEl.innerHTML = suppliers.length ? suppliers.map(s=>{
+      const count = productsArr().filter(p=>p.supplierId===s.id).length;
+      return `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); flex-wrap:wrap;">
+        <span style="flex:1; min-width:140px;">${escapeAttr(s.name)}${s.phone ? ` <span class="hint">· ${escapeAttr(s.phone)}</span>` : ''}</span>
+        <span class="hint">${count} product${count===1?'':'s'}</span>
+        <input type="text" value="${escapeAttr(s.code)}" style="width:80px; text-align:center; text-transform:uppercase;" onchange="renameSupplierCode('${s.id}', this.value)">
+        <button class="btn btn-outline btn-sm" onclick="removeSupplier('${s.id}')" style="color:var(--rust);">Remove</button>
+      </div>`;
+    }).join('') : '<span class="hint">No suppliers yet — add one below.</span>';
+  }
+  const newSup = document.getElementById('new-p-supplier');
+  if(newSup) newSup.innerHTML = `<option value="">— None / unknown —</option>` + supplierOptionsHtml(newSup.value);
+}
 function toggleNewFixedSetHint(){
   const on = document.getElementById('new-p-fixedset').checked;
   document.getElementById('new-p-contents-wrap').style.display = on ? 'block' : 'none';
@@ -1370,6 +1467,8 @@ async function createProductManually(){
   if(!code || !name || !mrp){ statusEl.style.color='var(--rust)'; statusEl.textContent='Code, name, and price are required.'; return; }
   if(findProduct(code)){ statusEl.style.color='var(--rust)'; statusEl.textContent=`Code "${code}" already exists — use Edit on that row instead.`; return; }
   const isFixedSet = document.getElementById('new-p-fixedset').checked;
+  const supplierId = document.getElementById('new-p-supplier').value;
+  const costRaw = document.getElementById('new-p-cost').value;
   const payload = {
     code, name, category, mrp,
     system: document.getElementById('new-p-system').value,
@@ -1377,6 +1476,8 @@ async function createProductManually(){
     type: document.getElementById('new-p-type').value,
     ...extractProductAttributes(name, code),
   };
+  if(supplierId) payload.supplierId = supplierId;
+  if(costRaw !== '') payload.costPrice = Math.round(parseFloat(costRaw)) || 0;
   if(isFixedSet){
     payload.isFixedSet = true;
     payload.discountPct = 0;
@@ -1385,10 +1486,11 @@ async function createProductManually(){
     if(contents) payload.contents = contents;
   }
   try{
-    await db.ref('products/'+sanitizeKey(code)).set(payload);
+    await db.ref('products/'+sanitizeKey(code)).set(withPriceHistory(payload, null, 'manual add'));
     statusEl.style.color='var(--sage)'; statusEl.textContent=`Added "${name}".`;
-    ['new-p-code','new-p-name','new-p-category','new-p-mrp','new-p-contents'].forEach(id=>document.getElementById(id).value='');
+    ['new-p-code','new-p-name','new-p-category','new-p-mrp','new-p-contents','new-p-cost'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('new-p-fixedset').checked = false;
+    document.getElementById('new-p-supplier').value = '';
     toggleNewFixedSetHint();
   }catch(err){ statusEl.style.color='var(--rust)'; statusEl.textContent='Could not add: '+err.message; }
 }
@@ -1518,6 +1620,12 @@ function renderProductTable(){
             <div><label class="small">Laterality</label><select id="edit-p-laterality-${p.id}"><option value="" ${!p.laterality?'selected':''}>—</option><option value="Left" ${p.laterality==='Left'?'selected':''}>Left</option><option value="Right" ${p.laterality==='Right'?'selected':''}>Right</option></select></div>
             <label class="small" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="edit-p-fixedset-${p.id}" ${p.isFixedSet?'checked':''}> Fixed Instrument Set</label>
           </div>
+          <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-top:12px; padding-top:12px; border-top:1px dashed var(--line);">
+            <div><label class="small">Supplier <span style="font-weight:400; color:var(--cream-faint);">(admin only)</span></label><select id="edit-p-supplier-${p.id}"><option value="">— None / unknown —</option>${supplierOptionsHtml(p.supplierId)}</select></div>
+            <div><label class="small">Your cost price (₹) <span style="font-weight:400; color:var(--cream-faint);">(admin only)</span></label><input type="number" id="edit-p-cost-${p.id}" value="${p.costPrice??''}" style="width:120px;"></div>
+            <div class="hint">${p.costPrice ? `Margin: ${money(p.mrp - p.costPrice)} (${p.mrp ? Math.round((1 - p.costPrice/p.mrp)*100) : 0}%)` : 'No cost price set yet'}</div>
+          </div>
+          ${Array.isArray(p.priceHistory) && p.priceHistory.length ? `<div class="hint" style="margin-top:8px;">Price history: ${p.priceHistory.slice(-5).reverse().map(h=>`${new Date(h.date).toLocaleDateString('en-IN',{day:'numeric',month:'short'})} ${h.field==='mrp'?'MRP':'cost'} ${money(h.from)}→${money(h.to)}`).join(' · ')}</div>` : ''}
           <div style="margin-top:8px;">
             <label class="small">What's included (optional, fixed sets only)</label>
             <textarea id="edit-p-contents-${p.id}" style="min-height:50px; width:100%;">${escapeAttr(p.contents||'')}</textarea>
@@ -1530,7 +1638,8 @@ function renderProductTable(){
     const stockDisplay = !stockTrackingEnabled(p) && !p.outOfStock ? `<span style="color:var(--cream-faint);">untracked</span>` : `<span class="num" style="color:${stock<=0?'var(--rust)':(stock<10?'var(--amber-bright)':'var(--sage)')}">${isFinite(stock)?stock:'—'}</span>`;
     const hasOwnDiscount = p.discountPct!==undefined && p.discountPct!==null;
     const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
-    const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null].filter(Boolean);
+    const supplier = findSupplier(p.supplierId);
+    const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null, supplier?`Supplier: ${supplier.code}`:null].filter(Boolean);
     return `<tr${p.archived ? ' style="opacity:0.55;"' : ''}>
       <td class="num">${rowNum}</td>
       <td class="num">${p.code}</td>
@@ -1577,6 +1686,8 @@ async function saveProduct(id){
   const laterality = document.getElementById(`edit-p-laterality-${id}`)?.value || '';
   const isFixedSet = document.getElementById(`edit-p-fixedset-${id}`)?.checked || false;
   const contents = document.getElementById(`edit-p-contents-${id}`)?.value.trim() || '';
+  const supplierId = document.getElementById(`edit-p-supplier-${id}`)?.value || '';
+  const costRaw = document.getElementById(`edit-p-cost-${id}`)?.value;
   if(!code || !name){ alert('Code and name are required.'); return; }
   const payload = { code, name, category, mrp };
   // Archiving is controlled by the Archive/Restore buttons, not this form —
@@ -1597,6 +1708,8 @@ async function saveProduct(id){
   if(diameterRaw){ payload.diameterMm = parseFloat(diameterRaw); }
   if(lengthRaw){ payload.lengthMm = parseFloat(lengthRaw); }
   if(laterality) payload.laterality = laterality;
+  if(supplierId) payload.supplierId = supplierId;
+  if(costRaw !== ''){ payload.costPrice = Math.round(parseFloat(costRaw)) || 0; }
   if(isFixedSet){
     payload.isFixedSet = true;
     payload.discountPct = 0;
@@ -1609,7 +1722,7 @@ async function saveProduct(id){
   const btn = document.getElementById(`save-p-btn-${id}`);
   if(btn){ btn.textContent = 'Saving…'; btn.disabled = true; }
   try{
-    await db.ref(`products/${id}`).set(payload);
+    await db.ref(`products/${id}`).set(withPriceHistory(payload, existing, 'manual edit'));
     // Explicitly close edit mode and re-render right now, rather than
     // waiting on the realtime listener — that listener can fire (and
     // re-render) WHILE this write is still in flight, before editingProductId
@@ -1694,12 +1807,28 @@ function splitCsvLine(line, delimiter){
       }
       while(i < len && line[i] !== delimiter) i++; // ignore any stray trailing chars before the real delimiter
     } else {
+      let groupsInCurrentNumber = 0; // tracks whether we're already confirmed mid-chain of a grouped number
       while(i < len){
         const ch = line[i];
         if(ch === delimiter){
-          if(delimiter === ',' && /\d/.test(line[i-1]||'') && /^\d{3}(\D|$)/.test(line.slice(i+1))){
-            i++; continue; // grouping comma inside a number — not a real column break
-          }
+          const isDigitBefore = /\d/.test(line[i-1]||'');
+          const ahead = line.slice(i+1);
+          // Only treated as "digits inside one number" with strong evidence.
+          // The FIRST grouping comma in a number is inherently ambiguous
+          // with a real column break ("945,180" could be one number or two
+          // separate columns — cost then MRP — and there's no way to tell
+          // from text alone), so it only merges given a decimal continuing
+          // right after ("4,087.50") or another 3-digit group chaining
+          // after it ("1,500,000"). Once one grouping comma in this field
+          // has already been confirmed, later commas just need one more
+          // plain 3-digit group to complete the chain — that's what lets
+          // "1,500,000" merge fully instead of stopping after "1,500".
+          // If a thousands-separated price is deliberately the very last
+          // column on a line with nothing else to confirm it, quote it
+          // (e.g. "12,500") — quoted fields skip this guesswork entirely.
+          const firstGroupMatch = delimiter === ',' && isDigitBefore && /^\d{3}(\.\d|,\d{3}(\D|$))/.test(ahead);
+          const chainedGroupMatch = delimiter === ',' && groupsInCurrentNumber > 0 && isDigitBefore && /^\d{3}(\D|$)/.test(ahead);
+          if(firstGroupMatch || chainedGroupMatch){ groupsInCurrentNumber++; i++; continue; }
           break;
         }
         field += ch; i++;
@@ -1721,20 +1850,31 @@ function parseCsvRows(raw){
   }
   const rawRows = [];
   let skipped = 0;
-  const skippedRows = [];
+  const skippedRows = []; // ALL rejected rows are kept (not just the first few) so they can be downloaded as a CSV rather than only glimpsed on screen.
+  const seenInThisFile = new Map(); // code -> row, to catch the classic paste-it-twice mistake
+  const duplicateCodes = [];
   lines.forEach(line=>{
     const parts = splitCsvLine(line, delimiter);
-    const skip = (reason) => { skipped++; if(skippedRows.length<15) skippedRows.push({line, reason}); };
+    const skip = (reason) => { skipped++; skippedRows.push({line, reason}); };
     if(parts.length<4){ skip(`only found ${parts.length} column(s), need at least 4`); return; }
     const [code,name,category,...rest] = parts;
+    // 4 data columns after code/name/category = just MRP (existing format).
+    // 5+ = the last is MRP and the second-to-last is treated as your cost
+    // price, so a supplier PO like "code,name,category,cost,mrp" can be
+    // pasted directly without reshaping it first.
     const mrpStr = rest[rest.length-1];
+    const costStr = rest.length >= 2 ? rest[rest.length-2] : null;
     const mrp = Math.round(parseFloat(String(mrpStr).replace(/[^\d.\-]/g,'')));
+    const cost = costStr!==null ? Math.round(parseFloat(String(costStr).replace(/[^\d.\-]/g,''))) : null;
     if(!code){ skip('missing code'); return; }
     if(!name){ skip('missing name'); return; }
     if(isNaN(mrp)){ skip(`price "${mrpStr}" isn't a number`); return; }
-    rawRows.push({ code, name, category: (category||'').trim(), mrp });
+    if(seenInThisFile.has(code)) duplicateCodes.push({code, first: seenInThisFile.get(code), duplicate: {code,name}});
+    const row = { code, name, category: (category||'').trim(), mrp, cost: (cost!==null && !isNaN(cost)) ? cost : null };
+    seenInThisFile.set(code, row);
+    rawRows.push(row);
   });
-  return { rawRows, skipped, skippedRows, lineCount: lines.length };
+  return { rawRows, skipped, skippedRows, lineCount: lines.length, duplicateCodes };
 }
 // Strips every size token (diameter×length, hole count, angle, Left/Right)
 // out of a product name — what's left is almost always identical across
@@ -1775,6 +1915,7 @@ function renderImportGroups(parsedRaw){
   const el = document.getElementById('import-groups');
   const statusEl = document.getElementById('import-status');
   document.getElementById('import-preview').style.display='none';
+  lastRejectedRows = parsedRaw ? parsedRaw.skippedRows : [];
   if(!parsedRaw || !parsedRaw.rawRows.length){
     el.style.display = 'none';
     document.getElementById('import-skipped-detail').style.display = parsedRaw && parsedRaw.skippedRows.length ? 'block' : 'none';
@@ -1784,13 +1925,25 @@ function renderImportGroups(parsedRaw){
     return;
   }
   statusEl.textContent='';
+  document.getElementById('import-skipped-detail').style.display = parsedRaw.skippedRows.length ? 'block' : 'none';
+  if(parsedRaw.skippedRows.length) document.getElementById('import-skipped-detail').innerHTML = renderSkippedDetail(parsedRaw);
   const groups = groupParsedRows(parsedRaw.rawRows);
-  pendingImportGroups = { groups, skipped: parsedRaw.skipped, skippedRows: parsedRaw.skippedRows, lineCount: parsedRaw.lineCount };
+  pendingImportGroups = { groups, skipped: parsedRaw.skipped, skippedRows: parsedRaw.skippedRows, lineCount: parsedRaw.lineCount, duplicateCodes: parsedRaw.duplicateCodes };
   const anyStemGrouped = groups.some(g=>g.key.startsWith('stem:'));
+  const hasCost = parsedRaw.rawRows.some(r=>r.cost!==null);
   el.style.display = 'block';
   el.innerHTML = `
+    ${parsedRaw.duplicateCodes.length ? `<div style="border:1px solid var(--rust); background:rgba(200,90,70,0.08); padding:10px; margin-bottom:12px;">
+      <b style="color:var(--rust);">${parsedRaw.duplicateCodes.length} code${parsedRaw.duplicateCodes.length===1?'':'s'} appear more than once in this file</b> — only the last occurrence of each will be kept, the earlier one(s) will be silently discarded. Worth checking this isn't a paste mistake before continuing:
+      <div style="margin-top:6px; font-size:11.5px; color:var(--cream-faint);">${parsedRaw.duplicateCodes.slice(0,8).map(d=>`${escapeAttr(d.code)} — "${escapeAttr(d.first.name)}" vs "${escapeAttr(d.duplicate.name)}"`).join('<br>')}${parsedRaw.duplicateCodes.length>8 ? `<br>…and ${parsedRaw.duplicateCodes.length-8} more` : ''}</div>
+    </div>` : ''}
     <div class="panel-title" style="font-size:15px;">Tag ${groups.length} detected group${groups.length===1?'':'s'} before importing</div>
     <div class="view-desc" style="margin-bottom:10px;">Grouped automatically by the CSV's Category column${anyStemGrouped ? ', and by matching product names for rows with no Category' : ''} — review each (most will already be right), then continue to the import preview.</div>
+    <div style="border:1px solid var(--line); padding:10px; margin-bottom:12px;">
+      <label class="small">Supplier for this whole import <span style="font-weight:400; color:var(--cream-faint);">(admin only — leave as "don't set" to leave existing products' suppliers untouched)</span></label>
+      <select id="import-batch-supplier"><option value="">— Don't set / keep existing —</option>${supplierOptionsHtml('')}</select>
+      ${hasCost ? `<div class="hint" style="margin-top:4px;">A cost column was detected in this file — it'll be saved as each product's cost price.</div>` : ''}
+    </div>
     ${groups.map((g,i)=>`
       <div style="border:1px solid var(--line); padding:10px; margin-bottom:8px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
@@ -1822,8 +1975,10 @@ function onGroupCategoryChange(i){
 function applyImportGroupTags(){
   if(!pendingImportGroups) return;
   const existingCodes = new Set(productsArr().map(p=>p.code));
+  const batchSupplierId = document.getElementById('import-batch-supplier')?.value || '';
   let added=0, updated=0;
   const addedSamples=[], updatedSamples=[];
+  const supplierCollisions=[];
   const updates = {};
   pendingImportGroups.groups.forEach((g,i)=>{
     const subFamily = document.getElementById(`grp-subfamily-${i}`).value.trim() || g.subFamily;
@@ -1838,8 +1993,8 @@ function applyImportGroupTags(){
       else { updated++; if(updatedSamples.length<5) updatedSamples.push({code:row.code,name:row.name,oldMrp:old?.mrp,mrp:row.mrp}); }
       existingCodes.add(row.code);
       // Same carry-forward-on-update safety as before, now also covering the
-      // taxonomy/attribute fields — a price refresh never wipes out tags a
-      // previous import (or manual edit) already set.
+      // taxonomy/attribute/procurement fields — a price refresh never wipes
+      // out tags a previous import (or manual edit) already set.
       const preserved = {};
       if(old){
         if(stockTrackingEnabled(old)) preserved.stock = old.stock;
@@ -1851,15 +2006,28 @@ function applyImportGroupTags(){
         // A routine price refresh must not resurrect a product that was
         // deliberately archived.
         if(old.archived) preserved.archived = true;
+        // Supplier/cost are only ever set here when THIS import explicitly
+        // provides them — otherwise whatever was there before survives.
+        if(old.supplierId) preserved.supplierId = old.supplierId;
+        if(old.costPrice !== undefined && old.costPrice !== null) preserved.costPrice = old.costPrice;
+      }
+      // A code that already belongs to a DIFFERENT supplier is exactly the
+      // silent-overwrite scenario a supplier code was meant to catch — flag
+      // it instead of quietly relabelling someone else's part number.
+      if(old && old.supplierId && batchSupplierId && old.supplierId !== batchSupplierId){
+        const oldSup = findSupplier(old.supplierId), newSup = findSupplier(batchSupplierId);
+        supplierCollisions.push({ code: row.code, name: row.name, oldSupplier: oldSup?.name||'unknown', newSupplier: newSup?.name||'unknown' });
       }
       const attrs = extractProductAttributes(row.name, row.code);
       const payload = { code: row.code, name: row.name, category: subFamily, mrp: row.mrp, system, topCategory, type, ...attrs, ...preserved };
       if(isFixedSet){ payload.isFixedSet = true; payload.discountPct = 0; payload.incentivePct = 0; }
-      updates[sanitizeKey(row.code)] = payload;
+      if(batchSupplierId) payload.supplierId = batchSupplierId;
+      if(row.cost !== null && !isNaN(row.cost)) payload.costPrice = row.cost;
+      updates[sanitizeKey(row.code)] = withPriceHistory(payload, old, 'csv import');
     });
   });
   document.getElementById('import-groups').style.display='none';
-  renderImportPreview({ updates, added, updated, skipped: pendingImportGroups.skipped, skippedRows: pendingImportGroups.skippedRows, addedSamples, updatedSamples, lineCount: pendingImportGroups.lineCount });
+  renderImportPreview({ updates, added, updated, skipped: pendingImportGroups.skipped, skippedRows: pendingImportGroups.skippedRows, addedSamples, updatedSamples, lineCount: pendingImportGroups.lineCount, supplierCollisions });
 }
 function renderImportPreview(parsed){
   const previewEl = document.getElementById('import-preview');
@@ -1887,6 +2055,10 @@ function renderImportPreview(parsed){
       Catalog size will go from ${catalogBefore} → ${catalogAfter} products.
     </div>
     ${bigChange ? `<div class="hint" style="color:var(--rust); margin-bottom:8px;">⚠ Over 30% of rows in this file were skipped — double check this is the right file before continuing.</div>` : ''}
+    ${parsed.supplierCollisions && parsed.supplierCollisions.length ? `<div style="border:1px solid var(--rust); background:rgba(200,90,70,0.08); padding:10px; margin-bottom:8px;">
+      <b style="color:var(--rust);">${parsed.supplierCollisions.length} code${parsed.supplierCollisions.length===1?'':'s'} already belong to a different supplier</b> — this import would relabel them. Confirm this is intentional (e.g. you've genuinely switched supplier for this part) before continuing:
+      <div style="margin-top:6px; font-size:11.5px; color:var(--cream-faint);">${parsed.supplierCollisions.slice(0,8).map(c=>`${escapeAttr(c.code)} — was ${escapeAttr(c.oldSupplier)}, now ${escapeAttr(c.newSupplier)}`).join('<br>')}${parsed.supplierCollisions.length>8?`<br>…and ${parsed.supplierCollisions.length-8} more`:''}</div>
+    </div>` : ''}
     ${parsed.addedSamples.length ? `<div style="font-size:12px; margin-bottom:6px;"><b>New products (example):</b> ${parsed.addedSamples.map(s=>`${escapeAttr(s.code)} — ${escapeAttr(s.name)} (₹${s.mrp})`).join('; ')}</div>` : ''}
     ${parsed.updatedSamples.length ? `<div style="font-size:12px; margin-bottom:10px;"><b>Price changes (example):</b> ${parsed.updatedSamples.map(s=>`${escapeAttr(s.code)}: ₹${s.oldMrp ?? '?'} → ₹${s.mrp}`).join('; ')}</div>` : ''}
     <div style="display:flex; gap:10px;">
@@ -1897,8 +2069,20 @@ function renderImportPreview(parsed){
   if(parsed.skippedRows.length) detailEl.innerHTML = renderSkippedDetail(parsed);
 }
 function renderSkippedDetail(parsed){
-  return `<div style="margin-bottom:4px; color:var(--cream-faint);">Skipped row${parsed.skipped===1?'':'s'} (showing ${parsed.skippedRows.length} of ${parsed.skipped}) — each on its own line so you can fix the source file:</div>` +
-    parsed.skippedRows.map((s,i)=>`<div style="padding:3px 0; border-top:1px solid var(--line);"><span style="color:var(--rust);">#${i+1} — ${escapeAttr(s.reason)}:</span> <span class="mono">${escapeAttr(s.line)}</span></div>`).join('');
+  const shown = parsed.skippedRows.slice(0,15);
+  const downloadBtn = parsed.skippedRows.length ? `<button class="btn btn-outline btn-sm" style="margin-bottom:8px;" onclick="downloadRejectedRows()">Download all ${parsed.skippedRows.length} rejected row${parsed.skippedRows.length===1?'':'s'} as CSV</button>` : '';
+  return downloadBtn + `<div style="margin-bottom:4px; color:var(--cream-faint);">Skipped row${parsed.skipped===1?'':'s'} (showing ${shown.length} of ${parsed.skipped}) — each on its own line so you can fix the source file:</div>` +
+    shown.map((s,i)=>`<div style="padding:3px 0; border-top:1px solid var(--line);"><span style="color:var(--rust);">#${i+1} — ${escapeAttr(s.reason)}:</span> <span class="mono">${escapeAttr(s.line)}</span></div>`).join('');
+}
+let lastRejectedRows = [];
+function downloadRejectedRows(){
+  if(!lastRejectedRows.length) return;
+  const csv = 'reason,original_line\n' + lastRejectedRows.map(s=>`"${s.reason.replace(/"/g,'""')}","${s.line.replace(/"/g,'""')}"`).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `rejected-rows-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
 }
 function cancelCsvImport(){
   pendingImport = null;
