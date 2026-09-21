@@ -671,10 +671,11 @@ function checkNewOrdersForChime(ordersObj){
    REALTIME LISTENERS
 ============================================================ */
 function attachListeners(){
-  db.ref('products').on('value', snap => { DB.products = snap.val() || {}; rerenderIfNeeded(); });
-  db.ref('kits').on('value', snap => { DB.kits = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('products').on('value', snap => { DB.products = snap.val() || {}; invalidateArrCaches(['products','productsByCode']); rerenderIfNeeded(); });
+  db.ref('kits').on('value', snap => { DB.kits = snap.val() || {}; invalidateArrCaches(['kits']); rerenderIfNeeded(); });
   db.ref('doctors').on('value', snap => {
     DB.doctors = snap.val() || {};
+    invalidateArrCaches(['doctors']);
     doctorsDataLoaded = true;
     rerenderIfNeeded();
   });
@@ -682,9 +683,10 @@ function attachListeners(){
     const ordersObj = snap.val() || {};
     checkNewOrdersForChime(ordersObj);
     DB.orders = ordersObj;
+    invalidateArrCaches(['orders']);
     rerenderIfNeeded();
   });
-  db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; rerenderIfNeeded(); });
+  db.ref('payouts').on('value', snap => { DB.payouts = snap.val() || {}; invalidateArrCaches(['payouts']); rerenderIfNeeded(); });
   db.ref('taxonomy').on('value', snap => {
     DB.taxonomy = snap.val() || {};
     // First-ever load with nothing saved yet — seed sensible starting values
@@ -702,10 +704,58 @@ function rerenderIfNeeded(){
   if(SESSION && currentView) showView(currentView, true);
 }
 
-function productsArr(){ return Object.entries(DB.products || {}).map(([id,p])=>({id,...p})); }
-function kitsArr(){ return Object.entries(DB.kits).map(([id,k])=>({id,...k})); }
-function doctorsArr(){ return Object.entries(DB.doctors).map(([id,d])=>({id,...d})); }
-function ordersArr(){ return Object.entries(DB.orders).map(([id,o])=>({id,...o})); }
+/* ============================================================
+   ARRAY CACHES
+   Before this, every *Arr() call rebuilt its array from scratch —
+   Object.entries + .map + object-spread-cloning every item, on EVERY
+   single call. That's cheap at a few hundred products, but this catalog
+   runs to ~7,800+ products, and a single busy screen (the admin ledger, a
+   doctor's order history) can call productsArr()/findProduct() dozens of
+   times while rendering. Each cache is rebuilt once, lazily, the first
+   time it's asked for after the underlying Firebase data actually
+   changed — invalidateArrCaches() is called from the *listener*, not from
+   these getters, so a screen re-rendered without new data just reuses the
+   same array. This is safe because nothing in the codebase mutates these
+   arrays in place (every .sort()/.reverse() here runs on a .filter()
+   result, which is always a fresh array, never the cached one).
+============================================================ */
+let _arrCache = { products:null, kits:null, doctors:null, orders:null, payouts:null, productsByCode:null };
+function invalidateArrCaches(keys){
+  (keys || Object.keys(_arrCache)).forEach(k => _arrCache[k] = null);
+}
+function productsArr(){
+  if(_arrCache.products === null) _arrCache.products = Object.entries(DB.products || {}).map(([id,p])=>({id,...p}));
+  return _arrCache.products;
+}
+function kitsArr(){
+  if(_arrCache.kits === null) _arrCache.kits = Object.entries(DB.kits || {}).map(([id,k])=>({id,...k}));
+  return _arrCache.kits;
+}
+function doctorsArr(){
+  if(_arrCache.doctors === null) _arrCache.doctors = Object.entries(DB.doctors || {}).map(([id,d])=>({id,...d}));
+  return _arrCache.doctors;
+}
+function ordersArr(){
+  if(_arrCache.orders === null) _arrCache.orders = Object.entries(DB.orders || {}).map(([id,o])=>({id,...o}));
+  return _arrCache.orders;
+}
+function payoutsArr(){
+  if(_arrCache.payouts === null) _arrCache.payouts = Object.entries(DB.payouts || {}).map(([id,p])=>({id,...p}));
+  return _arrCache.payouts;
+}
+// The single hottest lookup in the app — every order line calls this at
+// least once (often 2-3 times, for name/price/discount) — so it gets its
+// own O(1) Map instead of riding productsArr()'s O(n) .find(). At ~7,800
+// products this is the difference between one hash lookup and scanning
+// thousands of objects, every time any order or the catalog table renders.
+function productsByCodeMap(){
+  if(_arrCache.productsByCode === null){
+    _arrCache.productsByCode = new Map();
+    productsArr().forEach(p => _arrCache.productsByCode.set(p.code, p));
+  }
+  return _arrCache.productsByCode;
+}
+const findProduct = code => productsByCodeMap().get(code) || null;
 
 /* ============================================================
    CATALOG TAXONOMY — System / Type / Category
@@ -851,7 +901,6 @@ function extractProductAttributes(name, code){
   else if(/\(\s*right\s*\)/i.test(name) || /[0-9]R$/.test(code||'')) out.laterality = 'Right';
   return out;
 }
-function payoutsArr(){ return Object.entries(DB.payouts).map(([id,p])=>({id,...p})); }
 // Orders are auto-confirmed the moment they're placed (no admin confirmation
 // step anymore) — the only "not yet final" states left are a staff order
 // still waiting on the doctor's own approval, or one flagged for stock
@@ -969,6 +1018,7 @@ async function checkLoginOnResume(){
   if(result === TIMEOUT || !result){ showRoleStep(); return; }
   const doc = result;
   DB.doctors[saved.doctorId] = doc;
+  invalidateArrCaches(['doctors']); // this bypasses the normal listener, so the cache needs telling directly
   const acc = doc.accounts && doc.accounts[saved.accountKey];
   if(!acc || !acc.bound || !acc.credentialId){ clearDeviceAccount(); showRoleStep(); return; }
   pendingLogin = { doctorId: saved.doctorId, accountKey: saved.accountKey, account: acc, doctor: {id:saved.doctorId, ...doc} };
@@ -1153,7 +1203,6 @@ const findDocSafe = id => findDoc(id) || UNKNOWN_DOC;
 function sanitizeKey(code){
   return String(code).replace(/\./g,'_d_').replace(/#/g,'_h_').replace(/\$/g,'_dl_').replace(/\//g,'_s_').replace(/\[/g,'_lb_').replace(/\]/g,'_rb_');
 }
-const findProduct = code => productsArr().find(p=>p.code===code) || null;
 // Orders/kits used to store a flat list of product codes (quantity always
 // implicitly 1). These helpers read either the old shape or the new
 // {code, qty} shape transparently, so existing orders/kits already in
@@ -1465,7 +1514,17 @@ async function createProductManually(){
   const mrp = Math.round(parseFloat(document.getElementById('new-p-mrp').value) || 0);
   const statusEl = document.getElementById('new-p-status');
   if(!code || !name || !mrp){ statusEl.style.color='var(--rust)'; statusEl.textContent='Code, name, and price are required.'; return; }
-  if(findProduct(code)){ statusEl.style.color='var(--rust)'; statusEl.textContent=`Code "${code}" already exists — use Edit on that row instead.`; return; }
+  const clash = findProduct(code);
+  if(clash){
+    if(clash.archived){
+      statusEl.style.color='var(--rust)';
+      statusEl.innerHTML = `Code "${escapeAttr(code)}" belongs to an <b>archived</b> product ("${escapeAttr(clash.name)}") — it still exists, just hidden. Switch the filter below from "Active only" to "Active + archived" to find it, then either Restore it or use Edit to repurpose it. A code can't be reused for a new product while the old one still holds it.`;
+    } else {
+      statusEl.style.color='var(--rust)';
+      statusEl.textContent = `Code "${code}" already exists ("${clash.name}") — use Edit on that row instead.`;
+    }
+    return;
+  }
   const isFixedSet = document.getElementById('new-p-fixedset').checked;
   const supplierId = document.getElementById('new-p-supplier').value;
   const costRaw = document.getElementById('new-p-cost').value;
@@ -1689,6 +1748,15 @@ async function saveProduct(id){
   const supplierId = document.getElementById(`edit-p-supplier-${id}`)?.value || '';
   const costRaw = document.getElementById(`edit-p-cost-${id}`)?.value;
   if(!code || !name){ alert('Code and name are required.'); return; }
+  // Editing a code to match a DIFFERENT existing product is the same
+  // collision the manual-add form guards against — catch it here too,
+  // since a plain Firebase .set() by this record's own id would otherwise
+  // happily create two products sharing one code.
+  const codeClash = productsArr().find(p => p.id !== id && p.code === code);
+  if(codeClash){
+    alert(`Code "${code}" is already used by "${codeClash.name}"${codeClash.archived ? ' (archived)' : ''} — choose a different code, or edit that product instead.`);
+    return;
+  }
   const payload = { code, name, category, mrp };
   // Archiving is controlled by the Archive/Restore buttons, not this form —
   // carry the flag through so an ordinary edit can't silently put an
