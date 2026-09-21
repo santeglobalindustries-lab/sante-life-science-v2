@@ -389,12 +389,14 @@
             <select id="product-filter-category" onchange="productPage=1; renderProductTable()"><option value="">All categories</option></select>
             <select id="product-filter-type" onchange="productPage=1; renderProductTable()"><option value="">Implants &amp; instruments</option><option value="implant">Implants only</option><option value="instrument">Instruments only</option></select>
             <select id="product-filter-archived" onchange="productPage=1; renderProductTable()"><option value="active">Active only</option><option value="all">Active + archived</option><option value="archived">Archived only</option></select>
+            <select id="product-filter-supplier" onchange="productPage=1; renderProductTable()"><option value="">All suppliers</option><option value="__none__">No supplier assigned</option></select>
             <button class="btn btn-outline btn-sm" id="retag-btn" onclick="retagLegacyProducts()">Auto-tag untagged products</button>
           </div>
           <span class="view-desc" id="product-count"></span>
         </div>
+        <div id="product-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; border:1px solid var(--amber); background:rgba(212,165,116,0.06); padding:10px; margin-bottom:10px;"></div>
         <div class="table-wrap">
-          <table><thead><tr><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th style="text-align:center;">Discount %</th><th style="text-align:center;">Incentive %</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
+          <table><thead><tr><th style="width:28px;"><input type="checkbox" id="product-select-all-page" onchange="toggleSelectAllOnPage(this.checked)" title="Select all on this page"></th><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th style="text-align:center;">Discount %</th><th style="text-align:center;">Incentive %</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
         <div id="product-pagination" style="display:flex; justify-content:center; gap:10px; margin-top:14px; align-items:center;"></div>
       </div>
@@ -1498,6 +1500,12 @@ function renderSupplierControls(){
   }
   const newSup = document.getElementById('new-p-supplier');
   if(newSup) newSup.innerHTML = `<option value="">— None / unknown —</option>` + supplierOptionsHtml(newSup.value);
+  const filterSup = document.getElementById('product-filter-supplier');
+  if(filterSup){
+    const keepVal = filterSup.value;
+    filterSup.innerHTML = `<option value="">All suppliers</option><option value="__none__">No supplier assigned</option>` + supplierOptionsHtml('');
+    filterSup.value = keepVal; // preserve selection across re-renders (e.g. when a new supplier is added elsewhere)
+  }
 }
 function toggleNewFixedSetHint(){
   const on = document.getElementById('new-p-fixedset').checked;
@@ -1601,8 +1609,8 @@ async function retagLegacyProducts(){
 // usually a System/Category/Type filter matching nothing because those
 // products haven't been tagged yet. Saying that plainly beats a bare
 // "No matches", which reads like the catalog is broken.
-function emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untaggedCount, total}){
-  const filtersOn = [sysFilter, catFilter, typeFilter].filter(Boolean).length > 0;
+function emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, supplierFilter, untaggedCount, total}){
+  const filtersOn = [sysFilter, catFilter, typeFilter, supplierFilter].filter(Boolean).length > 0;
   const clearBtn = `<div style="margin-top:10px;"><button class="btn btn-outline btn-sm" onclick="clearProductFilters()">Clear all filters</button></div>`;
   if(filtersOn && untaggedCount === total && total > 0){
     return `<div style="padding:8px;">None of your ${total} products have a System/Category tag yet, so these filters can't match anything.<br><br>
@@ -1620,22 +1628,30 @@ function emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untagged
 }
 function clearProductFilters(){
   document.getElementById('product-search').value = '';
-  ['product-filter-system','product-filter-category','product-filter-type'].forEach(id=>{
+  ['product-filter-system','product-filter-category','product-filter-type','product-filter-supplier'].forEach(id=>{
     const el = document.getElementById(id); if(el) el.value = '';
   });
   productPage = 1;
   renderProductTable();
 }
+// Persisted across renders/pages (not reset on every renderProductTable
+// call) so ticking boxes on page 1, then paging to page 2 and ticking
+// more, accumulates a selection rather than losing it.
+let selectedProductIds = new Set();
+let currentPageProductIds = [];
 function renderProductTable(){
   const q = (document.getElementById('product-search').value||'').toLowerCase();
   const sysFilter = document.getElementById('product-filter-system')?.value || '';
   const catFilter = document.getElementById('product-filter-category')?.value || '';
   const typeFilter = document.getElementById('product-filter-type')?.value || '';
+  const supplierFilter = document.getElementById('product-filter-supplier')?.value || '';
   const all = productsArr();
   let rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q));
   if(sysFilter) rows = rows.filter(p => p.system === sysFilter);
   if(catFilter) rows = rows.filter(p => p.topCategory === catFilter);
   if(typeFilter) rows = rows.filter(p => (p.type||'implant') === typeFilter);
+  if(supplierFilter === '__none__') rows = rows.filter(p => !p.supplierId);
+  else if(supplierFilter) rows = rows.filter(p => p.supplierId === supplierFilter);
   // Archived products are hidden by default so the working list reflects
   // what doctors can actually order.
   const archivedFilter = document.getElementById('product-filter-archived')?.value || 'active';
@@ -1648,11 +1664,16 @@ function renderProductTable(){
   document.getElementById('product-count').textContent = `${rows.length} of ${all.length} products — page ${productPage} of ${totalPages}`
     + (untaggedCount ? ` · ${untaggedCount} not tagged yet` : '');
   const pageRows = rows.slice((productPage-1)*PRODUCTS_PER_PAGE, productPage*PRODUCTS_PER_PAGE);
+  currentPageProductIds = pageRows.map(p=>p.id);
+  const selectAllBox = document.getElementById('product-select-all-page');
+  if(selectAllBox) selectAllBox.checked = currentPageProductIds.length>0 && currentPageProductIds.every(id=>selectedProductIds.has(id));
+  renderProductBulkBar(rows);
   document.getElementById('product-table-body').innerHTML = pageRows.map((p,i)=>{
     const rowNum = (productPage-1)*PRODUCTS_PER_PAGE + i + 1;
     if(editingProductId === p.id){
       const attrBits = ['diameterMm','lengthMm','holeCount','angleDeg'].filter(k=>p[k]!==undefined);
       return `<tr>
+        <td></td>
         <td class="num">${rowNum}</td>
         <td><input type="text" id="edit-p-code-${p.id}" value="${escapeAttr(p.code)}" style="width:100%;"></td>
         <td><input type="text" id="edit-p-name-${p.id}" value="${escapeAttr(p.name)}" style="width:100%;"></td>
@@ -1668,6 +1689,7 @@ function renderProductTable(){
         </td>
       </tr>
       <tr>
+        <td></td>
         <td></td>
         <td colspan="9" style="background:var(--bg2); padding:12px;">
           <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
@@ -1699,7 +1721,9 @@ function renderProductTable(){
     const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
     const supplier = findSupplier(p.supplierId);
     const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null, supplier?`Supplier: ${supplier.code}`:null].filter(Boolean);
-    return `<tr${p.archived ? ' style="opacity:0.55;"' : ''}>
+    const rowStyle = [p.archived ? 'opacity:0.55;' : '', selectedProductIds.has(p.id) ? 'background:rgba(212,165,116,0.08);' : ''].filter(Boolean).join(' ');
+    return `<tr${rowStyle ? ` style="${rowStyle}"` : ''}>
+      <td><input type="checkbox" ${selectedProductIds.has(p.id)?'checked':''} onchange="toggleProductSelected('${p.id}', this.checked)"></td>
       <td class="num">${rowNum}</td>
       <td class="num">${p.code}</td>
       <td>${p.name}${p.archived ? ' <span class="badge deleted">Archived</span>' : ''}</td>
@@ -1717,7 +1741,7 @@ function renderProductTable(){
              <button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')" style="color:var(--rust);">Delete</button>`}
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" class="empty">${emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, untaggedCount, total: all.length})}</td></tr>`;
+  }).join('') || `<tr><td colspan="11" class="empty">${emptyProductTableMessage({q, sysFilter, catFilter, typeFilter, supplierFilter, untaggedCount, total: all.length})}</td></tr>`;
   const pagerEl = document.getElementById('product-pagination');
   if(pagerEl){
     pagerEl.innerHTML = totalPages > 1 ? `
@@ -1727,6 +1751,83 @@ function renderProductTable(){
   }
 }
 function startEditProduct(id){ editingProductId = id; renderProductTable(); }
+
+/* ============================================================
+   BULK SELECTION — supplier assignment
+   Lets Admin tick a batch of products (typically after filtering to "No
+   supplier assigned") and assign a vendor to all of them in one action —
+   works regardless of how the products got here (CSV import, manual add,
+   an import where the supplier step was skipped), unlike re-running an
+   import, which only helps if that exact CSV is still on hand.
+============================================================ */
+function toggleProductSelected(id, checked){
+  if(checked) selectedProductIds.add(id); else selectedProductIds.delete(id);
+  renderProductTable();
+}
+function toggleSelectAllOnPage(checked){
+  currentPageProductIds.forEach(id => checked ? selectedProductIds.add(id) : selectedProductIds.delete(id));
+  renderProductTable();
+}
+function selectAllMatchingFilter(){
+  // Re-runs the same filter renderProductTable just used, so this grabs
+  // every matching product across ALL pages, not just the one on screen.
+  const q = (document.getElementById('product-search').value||'').toLowerCase();
+  const sysFilter = document.getElementById('product-filter-system')?.value || '';
+  const catFilter = document.getElementById('product-filter-category')?.value || '';
+  const typeFilter = document.getElementById('product-filter-type')?.value || '';
+  const supplierFilter = document.getElementById('product-filter-supplier')?.value || '';
+  const archivedFilter = document.getElementById('product-filter-archived')?.value || 'active';
+  let rows = productsArr().filter(p => !q || p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q));
+  if(sysFilter) rows = rows.filter(p => p.system === sysFilter);
+  if(catFilter) rows = rows.filter(p => p.topCategory === catFilter);
+  if(typeFilter) rows = rows.filter(p => (p.type||'implant') === typeFilter);
+  if(supplierFilter === '__none__') rows = rows.filter(p => !p.supplierId);
+  else if(supplierFilter) rows = rows.filter(p => p.supplierId === supplierFilter);
+  if(archivedFilter === 'active') rows = rows.filter(p => !p.archived);
+  else if(archivedFilter === 'archived') rows = rows.filter(p => !!p.archived);
+  rows.forEach(p => selectedProductIds.add(p.id));
+  renderProductTable();
+}
+function clearProductSelection(){ selectedProductIds.clear(); renderProductTable(); }
+function renderProductBulkBar(filteredRows){
+  const bar = document.getElementById('product-bulk-bar');
+  if(!bar) return;
+  if(!selectedProductIds.size){ bar.style.display = 'none'; bar.innerHTML=''; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = `
+    <b>${selectedProductIds.size} selected</b>
+    <button class="btn btn-outline btn-sm" onclick="selectAllMatchingFilter()">Select all ${filteredRows.length} matching this filter</button>
+    <button class="btn btn-outline btn-sm" onclick="clearProductSelection()">Clear selection</button>
+    <span style="flex:1;"></span>
+    <select id="bulk-assign-supplier"><option value="">Assign supplier…</option>${supplierOptionsHtml('')}</select>
+    <button class="btn btn-sm" onclick="bulkAssignSupplier()">Apply to selected</button>
+  `;
+}
+async function bulkAssignSupplier(){
+  const supplierId = document.getElementById('bulk-assign-supplier')?.value;
+  if(!supplierId){ alert('Pick a supplier from the dropdown first.'); return; }
+  const supplier = findSupplier(supplierId);
+  const ids = [...selectedProductIds];
+  if(!confirm(`Assign "${supplier.name}" as the supplier for ${ids.length} selected product(s)?`)) return;
+  // Batched the same way the taxonomy backfill is — safe at any selection
+  // size, including "select all" across a few thousand untagged products.
+  const BATCH_SIZE = 400;
+  let done = 0;
+  try{
+    for(let i=0; i<ids.length; i+=BATCH_SIZE){
+      const slice = ids.slice(i, i+BATCH_SIZE);
+      const updates = {};
+      slice.forEach(id => { updates[`${id}/supplierId`] = supplierId; });
+      await db.ref('products').update(updates);
+      done += slice.length;
+    }
+    selectedProductIds.clear();
+    renderProductTable();
+    alert(`Assigned ${done} product(s) to ${supplier.name}.`);
+  }catch(err){
+    alert(`Assigned ${done} of ${ids.length} before hitting an error:\n\n${err.message}\n\nThe ${done} already saved are fine — adjust the selection and try again for the rest.`);
+  }
+}
 function cancelEditProduct(){ editingProductId = null; renderProductTable(); }
 async function saveProduct(id){
   const code = document.getElementById(`edit-p-code-${id}`).value.trim();
