@@ -240,7 +240,7 @@
     <div id="login-step-admin" style="display:none;">
       <div class="field">
         <label>Admin passcode</label>
-        <input type="password" id="admin-passcode" placeholder="••••••••">
+        <input type="password" id="admin-passcode" placeholder="••••••••" onkeydown="if(event.key==='Enter'){ event.preventDefault(); submitAdminLogin(); }">
       </div>
       <button class="btn btn-block" onclick="submitAdminLogin()">Enter</button>
       <a class="back-link" onclick="resetLoginFlow()">← back</a>
@@ -250,7 +250,7 @@
     <div id="login-step-phone" style="display:none;">
       <div class="field">
         <label>Your mobile number</label>
-        <input type="tel" id="login-phone" placeholder="98xxxxxxxx">
+        <input type="tel" id="login-phone" placeholder="98xxxxxxxx" onkeydown="if(event.key==='Enter'){ event.preventDefault(); lookupAccount(); }">
       </div>
       <button class="btn btn-block" onclick="lookupAccount()">Continue</button>
       <a class="back-link" onclick="resetLoginFlow()">← back</a>
@@ -262,7 +262,7 @@
       <div class="hint" style="margin-top:0; margin-bottom:16px;">First time signing in as <b id="pin-account-label" class="serif" style="color:var(--amber-bright); font-style:normal;"></b>. Enter the one-time password the Sante team sent you on WhatsApp, then set up fingerprint / Face ID for this device.</div>
       <div class="field">
         <label>One-time password</label>
-        <input type="password" id="login-pin" placeholder="6-digit code">
+        <input type="password" id="login-pin" placeholder="6-digit code" onkeydown="if(event.key==='Enter'){ event.preventDefault(); verifyPinAndBind(); }">
       </div>
       <button class="btn btn-block" onclick="verifyPinAndBind()">Verify &amp; Enable Fingerprint</button>
       <a class="back-link" onclick="resetLoginFlow()">← back</a>
