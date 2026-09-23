@@ -6,10 +6,10 @@
 <title>SLS</title>
 
 <link rel="manifest" href="./manifest.json">
-<meta name="theme-color" content="#0A0908">
+<meta name="theme-color" content="#F4F8F7">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="SLS">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="icon" href="./icons/icon-192.png">
@@ -25,15 +25,21 @@
 
 <style>
   :root{
-    --bg:#0A0908; --bg2:#141210; --bg3:#1C1916;
-    --line:#2E2A24; --line-soft:#211E1A;
-    --cream:#F2ECE1; --cream-dim:#B3A996; --cream-faint:#75705F;
-    --amber:#C89B5C; --amber-bright:#E4BA80; --rust:#B5654A; --sage:#8DA283;
+    /* Light, premium theme — teal is the primary brand/action color (the
+       associations doctors and surgical-supply apps most commonly use:
+       clinical, clean, trustworthy), amber-gold is kept as a secondary
+       accent for money/incentive figures, red for alerts/overdue, green
+       for success/paid. Every color in the app is drawn from these ten
+       variables — nothing else needs to change to re-theme it again later. */
+    --bg:#F4F8F7; --bg1:#EEF4F3; --bg2:#FFFFFF; --bg3:#EEF4F3;
+    --line:#DCE8E5; --line-soft:#EAF2F0;
+    --cream:#16211F; --cream-dim:#4A5C58; --cream-faint:#5C726D;
+    --amber:#0E7C74; --amber-bright:#12A296; --rust:#C23E35; --sage:#227D50;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   html, body{ height:100%; }
   body{
-    background:var(--bg); color:var(--cream); font-family:'Outfit',sans-serif; font-weight:300;
+    background:var(--bg); color:var(--cream); font-family:'Outfit',sans-serif; font-weight:400;
     min-height:100vh; -webkit-font-smoothing:antialiased;
     padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
   }
@@ -45,8 +51,8 @@
   #login-screen{
     min-height:100vh; display:flex; align-items:center; justify-content:center;
     background:
-      radial-gradient(circle at 20% 20%, rgba(200,155,92,0.06), transparent 45%),
-      radial-gradient(circle at 80% 80%, rgba(181,101,74,0.05), transparent 45%),
+      radial-gradient(circle at 20% 20%, rgba(14,124,116,0.07), transparent 45%),
+      radial-gradient(circle at 80% 80%, rgba(194,62,53,0.05), transparent 45%),
       var(--bg);
     padding:24px;
   }
@@ -59,14 +65,14 @@
   .field label{ display:block; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--cream-faint); margin-bottom:7px; }
   .field select, .field input{ width:100%; background:var(--bg3); border:1px solid var(--line); color:var(--cream); padding:11px 12px; font-size:15px; font-family:'Outfit',sans-serif; font-weight:300; }
   .field select:focus, .field input:focus{ outline:none; border-color:var(--amber); }
-  .btn{ display:inline-flex; align-items:center; justify-content:center; gap:8px; background:var(--amber); color:#151009; border:none; padding:12px 20px; font-size:13px; letter-spacing:0.05em; text-transform:uppercase; font-weight:500; transition:background 0.15s ease; }
+  .btn{ display:inline-flex; align-items:center; justify-content:center; gap:8px; background:var(--amber); color:#FFFFFF; border:none; padding:12px 20px; font-size:13px; letter-spacing:0.05em; text-transform:uppercase; font-weight:500; transition:background 0.15s ease; }
   .btn:hover{ background:var(--amber-bright); }
   .btn-outline{ background:transparent; border:1px solid var(--line); color:var(--cream-dim); }
   .btn-outline:hover{ border-color:var(--amber); color:var(--amber-bright); background:transparent; }
   .btn-sm{ padding:7px 12px; font-size:11px; }
   .btn-block{ width:100%; margin-top:6px; }
-  .btn-rust{ background:var(--rust); color:#150c09; }
-  .btn-sage{ background:var(--sage); color:#0c130a; }
+  .btn-rust{ background:var(--rust); color:#FFFFFF; }
+  .btn-sage{ background:var(--sage); color:#FFFFFF; }
   .btn:disabled{ opacity:0.35; cursor:not-allowed; }
   .login-msg{ font-size:12.5px; margin-top:10px; min-height:18px; }
   .login-msg.err{ color:var(--rust); }
@@ -76,13 +82,13 @@
   .hint{ font-size:11px; color:var(--cream-faint); line-height:1.6; margin-top:14px; }
 
   #app{ display:none; min-height:100vh; }
-  .topbar{ display:flex; align-items:center; justify-content:space-between; padding:16px 28px; border-bottom:1px solid var(--line); background:var(--bg2); position:sticky; top:0; z-index:20; }
+  .topbar{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; row-gap:10px; padding:16px 28px; border-bottom:1px solid var(--line); background:var(--bg2); position:sticky; top:0; z-index:20; }
   .topbar .brand{ display:flex; align-items:baseline; gap:10px; }
   .topbar .brand .brand-title{ font-size:22px; margin-bottom:0; }
   .topbar .brand .tag{ font-size:10px; letter-spacing:0.2em; color:var(--amber); text-transform:uppercase; }
-  .who{ display:flex; align-items:center; gap:14px; }
-  .who .name{ font-size:13px; color:var(--cream-dim); }
-  .who .role-chip{ font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:var(--amber); border:1px solid var(--line); padding:4px 9px; }
+  .who{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; min-width:0; }
+  .who .name{ font-size:13px; color:var(--cream-dim); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .who .role-chip{ font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:var(--amber); border:1px solid var(--line); padding:4px 9px; white-space:nowrap; }
 
   .shell{ display:flex; }
   .sidebar{ width:220px; border-right:1px solid var(--line); background:var(--bg2); min-height:calc(100vh - 61px); padding:20px 0; flex-shrink:0; }
@@ -110,7 +116,7 @@
   table{ width:100%; border-collapse:collapse; font-size:13px; }
   th{ text-align:left; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--cream-faint); padding:10px 12px; border-bottom:1px solid var(--line); font-weight:400;}
   td{ padding:12px; border-bottom:1px solid var(--line-soft); color:var(--cream-dim); vertical-align:middle;}
-  tr:hover td{ background:rgba(200,155,92,0.03); }
+  tr:hover td{ background:rgba(14,124,116,0.05); }
   .num{ font-family:'JetBrains Mono',monospace; color:var(--cream); }
   .table-wrap{ border:1px solid var(--line); background:var(--bg2); overflow-x:auto; }
   .item-table-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:10px; border:1px solid var(--line); }
@@ -122,7 +128,7 @@
   .badge{ display:inline-block; font-size:10px; letter-spacing:0.06em; text-transform:uppercase; padding:3px 9px; border:1px solid var(--line); }
   .badge.pending{ color:var(--amber-bright); border-color:var(--amber); }
   .badge.confirmed{ color:var(--sage); border-color:var(--sage); }
-  .badge.paid{ color:var(--sage); border-color:var(--sage); background:rgba(141,162,131,0.08); }
+  .badge.paid{ color:var(--sage); border-color:var(--sage); background:rgba(34,125,80,0.10); }
   .badge.due{ color:var(--rust); border-color:var(--rust); }
   .badge.partial{ color:var(--amber-bright); border-color:var(--amber); }
   .badge.bound{ color:var(--sage); border-color:var(--sage); }
@@ -157,7 +163,7 @@
 
   .search-results{ border:1px solid var(--line); max-height:220px; overflow-y:auto; margin-top:6px; background:var(--bg3); }
   .search-row{ display:flex; justify-content:space-between; padding:9px 12px; font-size:12.5px; border-bottom:1px solid var(--line-soft); cursor:pointer; }
-  .search-row:hover{ background:rgba(200,155,92,0.07); }
+  .search-row:hover{ background:rgba(14,124,116,0.09); }
   .search-row .n{ color:var(--cream-dim); }
   .search-row .p{ font-family:'JetBrains Mono',monospace; color:var(--amber-bright); }
 
@@ -185,6 +191,14 @@
     .nav-item.active{ border-left:none; border-bottom-color:var(--amber);}
     .main{ padding:22px 16px; }
     .topbar{ padding:14px 16px; }
+    /* Below ~480px (most phones in portrait) the brand mark and the
+       name/role/logout cluster no longer fit on one line without crowding
+       or wrapping mid-word — so instead of letting the browser wrap it
+       wherever it likes, force a deliberate two-row layout: brand on its
+       own row, then name+role on the left and Log out on the right of a
+       full-width second row. */
+    .who{ width:100%; justify-content:space-between; }
+    .who .name{ max-width:52vw; }
   }
 </style>
 </head>
@@ -317,7 +331,7 @@
             <span id="import-status" style="font-size:12px; color:var(--sage);"></span>
           </div>
           <div id="import-groups" style="margin-top:12px; display:none;"></div>
-          <div id="import-preview" style="margin-top:12px; padding:12px; border:1px solid var(--amber); background:rgba(212,165,116,0.06); display:none;"></div>
+          <div id="import-preview" style="margin-top:12px; padding:12px; border:1px solid var(--amber); background:rgba(14,124,116,0.08); display:none;"></div>
           <div id="import-skipped-detail" style="margin-top:10px; font-size:12px; color:var(--cream-faint); display:none;"></div>
           <div class="divider"></div>
           <div class="panel-title" style="font-size:15px;">Catalog backups</div>
@@ -394,7 +408,7 @@
           </div>
           <span class="view-desc" id="product-count"></span>
         </div>
-        <div id="product-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; border:1px solid var(--amber); background:rgba(212,165,116,0.06); padding:10px; margin-bottom:10px;"></div>
+        <div id="product-bulk-bar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; border:1px solid var(--amber); background:rgba(14,124,116,0.08); padding:10px; margin-bottom:10px;"></div>
         <div class="table-wrap">
           <table><thead><tr><th style="width:28px;"><input type="checkbox" id="product-select-all-page" onchange="toggleSelectAllOnPage(this.checked)" title="Select all on this page"></th><th>#</th><th>Code</th><th>Product</th><th>Category</th><th style="text-align:right;">MRP (₹)</th><th style="text-align:center;">Stock</th><th>Restock date</th><th style="text-align:center;">Discount %</th><th style="text-align:center;">Incentive %</th><th>Actions</th></tr></thead><tbody id="product-table-body"></tbody></table>
         </div>
@@ -1157,8 +1171,15 @@ function refreshWho(){
     document.getElementById('who-role').textContent='Admin';
   } else {
     const doc = DB.doctors[SESSION.doctorId];
-    document.getElementById('who-name').textContent = `${doc.name} — ${SESSION.accountLabel}`;
-    document.getElementById('who-role').textContent = 'Doctor account';
+    // The doctor's own account label is already "<name> (Doctor)" — showing
+    // both that and the doctor's name again produced "Dr Ashray — Dr Ashray
+    // (Doctor)", which is what was crowding the header on narrow phones.
+    // Staff accounts (technician/helper) don't repeat the doctor's name in
+    // their own label, so they still show which doctor's account it is.
+    document.getElementById('who-name').textContent = SESSION.accountKey === 'doctor'
+      ? doc.name
+      : `${SESSION.accountLabel} · ${doc.name}`;
+    document.getElementById('who-role').textContent = SESSION.accountKey === 'doctor' ? 'Doctor account' : 'Staff account';
   }
 }
 
@@ -1721,7 +1742,7 @@ function renderProductTable(){
     const hasOwnIncentive = p.incentivePct!==undefined && p.incentivePct!==null;
     const supplier = findSupplier(p.supplierId);
     const tagBits = [p.system, p.topCategory, p.type==='instrument'?'Instrument':null, p.isFixedSet?'Fixed Set':null, supplier?`Supplier: ${supplier.code}`:null].filter(Boolean);
-    const rowStyle = [p.archived ? 'opacity:0.55;' : '', selectedProductIds.has(p.id) ? 'background:rgba(212,165,116,0.08);' : ''].filter(Boolean).join(' ');
+    const rowStyle = [p.archived ? 'opacity:0.55;' : '', selectedProductIds.has(p.id) ? 'background:rgba(14,124,116,0.10);' : ''].filter(Boolean).join(' ');
     return `<tr${rowStyle ? ` style="${rowStyle}"` : ''}>
       <td><input type="checkbox" ${selectedProductIds.has(p.id)?'checked':''} onchange="toggleProductSelected('${p.id}', this.checked)"></td>
       <td class="num">${rowNum}</td>
@@ -2102,7 +2123,7 @@ function renderImportGroups(parsedRaw){
   const hasCost = parsedRaw.rawRows.some(r=>r.cost!==null);
   el.style.display = 'block';
   el.innerHTML = `
-    ${parsedRaw.duplicateCodes.length ? `<div style="border:1px solid var(--rust); background:rgba(200,90,70,0.08); padding:10px; margin-bottom:12px;">
+    ${parsedRaw.duplicateCodes.length ? `<div style="border:1px solid var(--rust); background:rgba(194,62,53,0.08); padding:10px; margin-bottom:12px;">
       <b style="color:var(--rust);">${parsedRaw.duplicateCodes.length} code${parsedRaw.duplicateCodes.length===1?'':'s'} appear more than once in this file</b> — only the last occurrence of each will be kept, the earlier one(s) will be silently discarded. Worth checking this isn't a paste mistake before continuing:
       <div style="margin-top:6px; font-size:11.5px; color:var(--cream-faint);">${parsedRaw.duplicateCodes.slice(0,8).map(d=>`${escapeAttr(d.code)} — "${escapeAttr(d.first.name)}" vs "${escapeAttr(d.duplicate.name)}"`).join('<br>')}${parsedRaw.duplicateCodes.length>8 ? `<br>…and ${parsedRaw.duplicateCodes.length-8} more` : ''}</div>
     </div>` : ''}
@@ -2224,7 +2245,7 @@ function renderImportPreview(parsed){
       Catalog size will go from ${catalogBefore} → ${catalogAfter} products.
     </div>
     ${bigChange ? `<div class="hint" style="color:var(--rust); margin-bottom:8px;">⚠ Over 30% of rows in this file were skipped — double check this is the right file before continuing.</div>` : ''}
-    ${parsed.supplierCollisions && parsed.supplierCollisions.length ? `<div style="border:1px solid var(--rust); background:rgba(200,90,70,0.08); padding:10px; margin-bottom:8px;">
+    ${parsed.supplierCollisions && parsed.supplierCollisions.length ? `<div style="border:1px solid var(--rust); background:rgba(194,62,53,0.08); padding:10px; margin-bottom:8px;">
       <b style="color:var(--rust);">${parsed.supplierCollisions.length} code${parsed.supplierCollisions.length===1?'':'s'} already belong to a different supplier</b> — this import would relabel them. Confirm this is intentional (e.g. you've genuinely switched supplier for this part) before continuing:
       <div style="margin-top:6px; font-size:11.5px; color:var(--cream-faint);">${parsed.supplierCollisions.slice(0,8).map(c=>`${escapeAttr(c.code)} — was ${escapeAttr(c.oldSupplier)}, now ${escapeAttr(c.newSupplier)}`).join('<br>')}${parsed.supplierCollisions.length>8?`<br>…and ${parsed.supplierCollisions.length-8} more`:''}</div>
     </div>` : ''}
