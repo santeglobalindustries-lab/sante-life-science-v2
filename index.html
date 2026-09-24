@@ -492,6 +492,7 @@
       <!-- ===== ADMIN: Ledger & Payouts ===== -->
       <div class="view" id="v-admin-ledger">
         <div class="view-header"><div class="eyebrow">Settlement</div><div class="view-title serif">Ledger &amp; Incentive Payouts</div><div class="view-desc">Record payments received and split incentive payouts across payees.</div></div>
+        <input type="text" id="ledger-doctor-search" placeholder="Search doctor by name…" style="max-width:320px; margin-bottom:18px;" oninput="renderAdminLedger()">
         <div id="admin-ledger-list"></div>
       </div>
 
@@ -2838,8 +2839,12 @@ function ledgerOrderCardHtml(o){
       </div>` : ''}
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Record a payment on this order</div>
-      <div class="hint" style="margin:0 0 6px;">Balance due right now: <b style="color:${balance>0?'var(--rust)':'var(--sage)'}">${money(balance)}</b> · use this only when a payment is specifically tied to this one order — for a lump sum covering several of this doctor's orders, use "Record a payment" for the doctor above instead.</div>
+      ${balance > 0 ? `
+      <div class="hint" style="margin:0 0 6px;">Balance due right now: <b style="color:var(--rust);">${money(balance)}</b> · use this only when a payment is specifically tied to this one order — for a lump sum covering several of this doctor's orders, use "Record a payment" for the doctor above instead.</div>
       <div class="row"><div><input type="number" placeholder="Amount received (₹)" id="pay-amt-${o.id}"></div><div><button class="btn btn-sm" onclick="recordPayment('${o.id}')">Record + WhatsApp receipt</button></div></div>
+      ` : `
+      <div class="hint" style="margin:0; color:var(--sage);">✓ Fully paid — nothing more to record on this order.${balance<0?` (overpaid by ${money(-balance)})`:''}</div>
+      `}
       <div class="divider"></div>
       <div class="panel-title" style="font-size:15px;">Incentive payout split</div>
       <div class="hint" style="margin:0 0 6px;">Incentive on this order: <b>${money(inc)}</b> · already paid out: <b style="color:var(--sage)">${money(incentivePaid)}</b> · remaining: <b style="color:${incentiveRemaining>0?'var(--rust)':'var(--sage)'}">${money(incentiveRemaining)}</b></div>
@@ -2850,16 +2855,19 @@ function ledgerOrderCardHtml(o){
         </div>`).join('')}
       </div>` : ''}
       <div id="payout-rows-${o.id}">
-        ${payoutDraft[o.id].map((row,i)=>`<div class="payout-row">
+        ${incentiveRemaining > 0 ? payoutDraft[o.id].map((row,i)=>`<div class="payout-row">
           <input type="text" placeholder="Payee name" value="${row.name}" oninput="updatePayoutDraft('${o.id}',${i},'name',this.value)">
           <input type="number" class="amt" placeholder="₹" value="${row.amount}" oninput="updatePayoutDraft('${o.id}',${i},'amount',this.value)">
           <button class="btn btn-outline btn-sm" onclick="removePayoutRow('${o.id}',${i})">Remove</button>
-        </div>`).join('')}
+        </div>`).join('') : ''}
       </div>
+      ${incentiveRemaining > 0 ? `
       <div style="display:flex; gap:10px; margin-top:8px;">
         <button class="btn btn-outline btn-sm" onclick="addPayoutRow('${o.id}')">+ Add payee</button>
         <button class="btn btn-sm" onclick="payIncentive('${o.id}')">Mark incentive paid + WhatsApp</button>
-      </div></div>`;
+      </div>` : `
+      <div class="hint" style="margin:0; color:var(--sage);">✓ Incentive fully paid out — nothing more to record.${incentiveRemaining<0?` (overpaid by ${money(-incentiveRemaining)})`:''}</div>
+      `}</div>`;
 }
 function bulkPaymentBoxHtml(doctorId, doc, totalOutstanding){
   const draft = bulkPaymentDraft[doctorId];
@@ -2890,13 +2898,18 @@ function renderAdminLedger(){
   const allOrders = ordersArr().filter(o=>!o.deleted);
   const byDoctor = {};
   allOrders.forEach(o=>{ (byDoctor[o.doctorId] = byDoctor[o.doctorId]||[]).push(o); });
-  const groups = Object.keys(byDoctor).map(doctorId=>{
+  const q = (document.getElementById('ledger-doctor-search')?.value || '').trim().toLowerCase();
+  let groups = Object.keys(byDoctor).map(doctorId=>{
     const doc = findDocSafe(doctorId);
     const orders = byDoctor[doctorId].sort((a,b)=> (a.createdAt<b.createdAt?1:-1));
     const totalBilled = orders.reduce((s,o)=>s+orderDiscounted(o),0);
     const totalPaid = orders.reduce((s,o)=>s+orderPaid(o),0);
     return {doctorId, doc, orders, totalBilled, totalPaid, totalOutstanding: totalBilled-totalPaid};
   }).sort((a,b)=> b.totalOutstanding - a.totalOutstanding || a.doc.name.localeCompare(b.doc.name));
+  // Searching filters the same worst-outstanding-first list down to matching
+  // names — it doesn't switch to a different single-doctor view, so typing
+  // then clearing the box always lands back on the normal collections list.
+  if(q) groups = groups.filter(g => g.doc.name.toLowerCase().includes(q));
 
   document.getElementById('admin-ledger-list').innerHTML = groups.length ? groups.map(g=>{
     return `<div style="border:1px solid var(--line); background:var(--bg2); padding:20px; margin-bottom:24px;">
@@ -2914,7 +2927,7 @@ function renderAdminLedger(){
       <div class="divider"></div>
       ${g.orders.map(ledgerOrderCardHtml).join('')}
     </div>`;
-  }).join('') : `<div class="empty">No orders to settle yet.</div>`;
+  }).join('') : `<div class="empty">${q ? `No doctor matching "${escapeAttr(q)}".` : 'No orders to settle yet.'}</div>`;
 }
 function previewBulkPayment(doctorId){
   const amtInput = document.getElementById(`bulk-amt-${doctorId}`);
