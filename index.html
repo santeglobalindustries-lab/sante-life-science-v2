@@ -1216,6 +1216,13 @@ function showView(id, silent){
    HELPERS
 ============================================================ */
 const money = n => '₹' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:0});
+// jsPDF's built-in fonts (Helvetica/Times/Courier — the only ones available
+// without embedding a full Unicode font file) have no glyph for ₹ (U+20B9).
+// Rather than silently dropping it, jsPDF substitutes a fallback glyph —
+// which is exactly the stray "1" that showed up in front of every amount
+// on the downloaded statement. "Rs." uses plain ASCII, so it always renders
+// correctly. This is PDF-only; the live app and CSV exports keep the real ₹.
+const pdfMoney = n => 'Rs. ' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:0});
 const findDoc = id => DB.doctors[id] ? {id, ...DB.doctors[id]} : null;
 // Fallback used whenever an order references a doctor that no longer exists
 // (e.g. deleted from Admin → Doctors). Without this, a single orphaned order
@@ -3617,15 +3624,53 @@ function renderDoctorReportBody(containerId, doctorId){
       <div class="table-wrap"><table><thead><tr><th>Order ID</th><th>Delivery</th><th style="text-align:center;">Items</th><th>Status</th><th style="text-align:right;">MRP</th><th style="text-align:right;">Billed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th><th style="text-align:right;">Incentive</th><th style="text-align:right;">Inc. Paid</th></tr></thead>
       <tbody>${rows.length ? rows.map(r=>`<tr><td>${orderIdDisplay(r.o)}</td><td>${r.o.date} ${r.o.time}</td><td class="num" style="text-align:center;">${orderItems(r.o).length}</td><td><span class="badge ${orderStatusBadgeClass(r.o)}">${orderStatusLabel(r.o)}</span></td><td class="num" style="text-align:right;">${money(r.mrp)}</td><td class="num" style="text-align:right;">${money(r.disc)}</td><td class="num" style="text-align:right;">${money(r.paid)}</td><td class="num" style="text-align:right; color:${r.balance>0?'var(--rust)':'var(--sage)'}">${money(r.balance)}</td><td class="num" style="text-align:right;">${money(r.inc)}</td><td class="num" style="text-align:right;">${money(r.incPaid)}</td></tr>`).join('') : `<tr><td colspan="10" class="empty">No orders yet.</td></tr>`}</tbody></table></div>
     </div>
-    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; align-items:center;">
-      <label class="small" style="margin:0;">Statement period</label>
-      <select id="${selectId}">
-        <option value="">All-time (from first order to date)</option>
-        ${monthly.map(m=>`<option value="${m.month}">${m.month}</option>`).join('')}
-      </select>
-      <button class="btn btn-sm" onclick="downloadReportPdf('${doctorId}', document.getElementById('${selectId}').value)">Download PDF</button>
-      <button class="btn btn-outline btn-sm" onclick="downloadReportCsv('${doctorId}', document.getElementById('${selectId}').value)">Download CSV</button>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-title">Download statement</div>
+      <div class="view-desc" style="margin-bottom:10px;">Pick a period, then download it as a PDF or CSV — same idea as downloading a statement from internet banking.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <div>
+          <label class="small">Period</label>
+          <select id="${selectId}" onchange="onReportPeriodChange('${containerId}')">
+            <option value="this-month">This month</option>
+            <option value="last-month">Last month</option>
+            <option value="last-3">Past 3 months</option>
+            <option value="last-6">Past 6 months</option>
+            <option value="this-year">This year</option>
+            <option value="all">All-time</option>
+            ${monthly.length ? `<optgroup label="Specific month">${monthly.map(m=>`<option value="${m.month}">${m.month}</option>`).join('')}</optgroup>` : ''}
+            <option value="custom">Custom range…</option>
+          </select>
+        </div>
+        <div id="${selectId}-custom" style="display:none; gap:10px; align-items:flex-end;">
+          <div><label class="small">From</label><input type="date" id="${selectId}-from"></div>
+          <div><label class="small">To</label><input type="date" id="${selectId}-to"></div>
+        </div>
+        <button class="btn btn-sm" onclick="downloadReportPdfForPeriod('${containerId}','${doctorId}')">Download PDF</button>
+        <button class="btn btn-outline btn-sm" onclick="downloadReportCsvForPeriod('${containerId}','${doctorId}')">Download CSV</button>
+      </div>
     </div>`;
+}
+function onReportPeriodChange(containerId){
+  const selectId = `report-month-select-${containerId}`;
+  const isCustom = document.getElementById(selectId).value === 'custom';
+  document.getElementById(`${selectId}-custom`).style.display = isCustom ? 'flex' : 'none';
+}
+function resolvedPeriodFor(containerId){
+  const selectId = `report-month-select-${containerId}`;
+  const periodValue = document.getElementById(selectId).value;
+  const customFrom = document.getElementById(`${selectId}-from`)?.value;
+  const customTo = document.getElementById(`${selectId}-to`)?.value;
+  return resolveReportPeriod(periodValue, customFrom, customTo);
+}
+function downloadReportPdfForPeriod(containerId, doctorId){
+  const period = resolvedPeriodFor(containerId);
+  if(period.invalid){ alert('Pick both a "From" and "To" date for a custom range.'); return; }
+  downloadReportPdf(doctorId, period.from, period.to, period.label);
+}
+function downloadReportCsvForPeriod(containerId, doctorId){
+  const period = resolvedPeriodFor(containerId);
+  if(period.invalid){ alert('Pick both a "From" and "To" date for a custom range.'); return; }
+  downloadReportCsv(doctorId, period.from, period.to, period.label);
 }
 function renderAdminReports(){
   const sel = document.getElementById('report-doctor-select');
@@ -3650,8 +3695,45 @@ async function loadLogoDataUrl(){
     });
   }catch(e){ return null; }
 }
-function reportRowsForPeriod(allRows, month){
-  return month ? allRows.filter(r=> r.o.date.slice(0,7)===month) : allRows;
+// Bank-statement-style period picker: a handful of common presets plus a
+// genuine custom date range, instead of only "pick one calendar month."
+// Returns {label, from, to} where from/to are 'YYYY-MM-DD' or null for
+// all-time — string comparison works directly against o.date since it's
+// already stored in that exact format.
+function resolveReportPeriod(periodValue, customFrom, customTo){
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0,10);
+  const monthsAgo = (n) => { const d = new Date(today); d.setDate(d.getDate()+1); d.setMonth(d.getMonth()-n); return d; };
+  const fmt = (d) => d.toISOString().slice(0,10);
+  const pad = (n) => String(n).padStart(2,'0');
+
+  if(!periodValue || periodValue === 'all') return { label: 'All-time (from first order to date)', from: null, to: null };
+  if(periodValue === 'this-month'){
+    return { label: 'This month', from: `${today.getFullYear()}-${pad(today.getMonth()+1)}-01`, to: todayStr };
+  }
+  if(periodValue === 'last-month'){
+    const d = new Date(today.getFullYear(), today.getMonth()-1, 1);
+    const y = d.getFullYear(), m = d.getMonth();
+    const lastDay = new Date(y, m+1, 0).getDate();
+    return { label: 'Last month', from: `${y}-${pad(m+1)}-01`, to: `${y}-${pad(m+1)}-${pad(lastDay)}` };
+  }
+  if(periodValue === 'last-3') return { label: 'Past 3 months', from: fmt(monthsAgo(3)), to: todayStr };
+  if(periodValue === 'last-6') return { label: 'Past 6 months', from: fmt(monthsAgo(6)), to: todayStr };
+  if(periodValue === 'this-year') return { label: 'This year', from: `${today.getFullYear()}-01-01`, to: todayStr };
+  if(periodValue === 'custom'){
+    if(!customFrom || !customTo) return { label: 'Custom range', from: null, to: null, invalid: true };
+    return { label: `${customFrom} to ${customTo}`, from: customFrom, to: customTo };
+  }
+  if(/^\d{4}-\d{2}$/.test(periodValue)){ // a specific calendar month, e.g. "2026-09"
+    const [y,m] = periodValue.split('-').map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    return { label: periodValue, from: `${periodValue}-01`, to: `${periodValue}-${pad(lastDay)}` };
+  }
+  return { label: 'All-time (from first order to date)', from: null, to: null };
+}
+function reportRowsForPeriod(allRows, from, to){
+  if(!from && !to) return allRows;
+  return allRows.filter(r => (!from || r.o.date >= from) && (!to || r.o.date <= to));
 }
 function totalsFromRows(rows){
   const t = rows.reduce((acc,r)=>({
@@ -3663,9 +3745,9 @@ function totalsFromRows(rows){
   t.incentiveOutstanding = t.incentive - t.incentivePaid;
   return t;
 }
-async function downloadReportPdf(doctorId, month){
+async function downloadReportPdf(doctorId, from, to, label){
   const { doc: d, rows: allRows } = buildDoctorReportData(doctorId);
-  const rows = reportRowsForPeriod(allRows, month);
+  const rows = reportRowsForPeriod(allRows, from, to);
   const totals = totalsFromRows(rows);
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({unit:'pt', format:'a4'});
@@ -3681,7 +3763,7 @@ async function downloadReportPdf(doctorId, month){
   pdf.setFont('helvetica','bold'); pdf.setFontSize(13);
   pdf.text(`Doctor Statement — ${d.name}`, 40, y); y += 16;
   pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(90);
-  pdf.text(`Period: ${month ? month : 'All-time (from first order to date)'}`, 40, y); y += 13;
+  pdf.text(`Period: ${label}`, 40, y); y += 13;
   pdf.text(`Generated: ${new Date().toLocaleString('en-IN')}`, 40, y); y += 13;
   pdf.text(`Discount rate: ${d.discountPct??d.incentivePct??0}%   ·   Incentive rate: ${d.incentivePct??0}%   ·   Payment due: ${d.dueDays??30} days`, 40, y); y += 20;
   pdf.setTextColor(0);
@@ -3690,13 +3772,13 @@ async function downloadReportPdf(doctorId, month){
     head: [['Metric','Amount']],
     body: [
       ['Total orders', String(totals.orders)],
-      ['Total MRP', money(totals.mrp)],
-      ['Total billed', money(totals.billed)],
-      ['Total paid', money(totals.paid)],
-      ['Outstanding balance', money(totals.outstanding)],
-      ['Incentive earned', money(totals.incentive)],
-      ['Incentive paid out', money(totals.incentivePaid)],
-      ['Incentive still owed', money(totals.incentiveOutstanding)],
+      ['Total MRP', pdfMoney(totals.mrp)],
+      ['Total billed', pdfMoney(totals.billed)],
+      ['Total paid', pdfMoney(totals.paid)],
+      ['Outstanding balance', pdfMoney(totals.outstanding)],
+      ['Incentive earned', pdfMoney(totals.incentive)],
+      ['Incentive paid out', pdfMoney(totals.incentivePaid)],
+      ['Incentive still owed', pdfMoney(totals.incentiveOutstanding)],
     ],
     theme:'grid', styles:{fontSize:9, cellPadding:5}, headStyles:{fillColor:[45,34,24]}, columnStyles:{0:{fontStyle:'bold'}},
     margin:{left:40, right:40}
@@ -3706,7 +3788,7 @@ async function downloadReportPdf(doctorId, month){
   pdf.autoTable({
     startY: y,
     head: [['Order ID','Delivery','Status','Items','MRP','Disc %','Billed','Paid','Balance','Incentive','Inc. Paid']],
-    body: rows.map(r=>[orderIdDisplay(r.o), `${r.o.date} ${r.o.time}`, orderStatusLabel(r.o), String(orderItems(r.o).length), money(r.mrp), r.discPct+'%', money(r.disc), money(r.paid), money(r.balance), money(r.inc), money(r.incPaid)]),
+    body: rows.map(r=>[orderIdDisplay(r.o), `${r.o.date} ${r.o.time}`, orderStatusLabel(r.o), String(orderItems(r.o).length), pdfMoney(r.mrp), r.discPct+'%', pdfMoney(r.disc), pdfMoney(r.paid), pdfMoney(r.balance), pdfMoney(r.inc), pdfMoney(r.incPaid)]),
     theme:'striped', styles:{fontSize:7, cellPadding:3.5}, headStyles:{fillColor:[45,34,24], fontSize:7},
     margin:{left:40, right:40},
     didDrawPage: (data) => {
@@ -3714,21 +3796,33 @@ async function downloadReportPdf(doctorId, month){
       pdf.text(`SLS — ${d.name} — page ${pdf.internal.getNumberOfPages()}`, 40, pdf.internal.pageSize.getHeight()-20);
     }
   });
-  pdf.save(`${d.name.replace(/\s+/g,'_')}_${month||'all-time'}_statement.pdf`);
+  if(!rows.length){
+    pdf.setFont('helvetica','normal'); pdf.setFontSize(9); pdf.setTextColor(120);
+    pdf.text('No orders fall within this period.', 40, y+18);
+  }
+  const fileSafeLabel = (to ? `${from}_to_${to}` : 'all-time').replace(/\s+/g,'');
+  pdf.save(`${d.name.replace(/\s+/g,'_')}_${fileSafeLabel}_statement.pdf`);
 }
-function downloadReportCsv(doctorId, month){
+function downloadReportCsv(doctorId, from, to, label){
   const { doc: d, rows: allRows } = buildDoctorReportData(doctorId);
-  const rows = reportRowsForPeriod(allRows, month);
+  const rows = reportRowsForPeriod(allRows, from, to);
   const header = ['Order ID','Placed','Delivery Date','Delivery Time','Status','Items','MRP','Discount %','Billed','Paid','Balance','Incentive','Incentive Paid','Incentive Balance'];
   const csvRows = rows.map(r=>[orderIdDisplay(r.o), placedDateDisplay(r.o), r.o.date, r.o.time, orderStatusLabel(r.o), orderItems(r.o).length, r.mrp, r.discPct, r.disc, r.paid, r.balance, r.inc, r.incPaid, r.incBalance]);
-  const csv = [header, ...csvRows].map(row=>row.map(v=>{
+  const csv = [[`Period: ${label}`], header, ...csvRows].map(row=>row.map(v=>{
     const s = String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
   }).join(',')).join('\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  // Prepend a UTF-8 BOM — without it, Excel on Windows (the overwhelmingly
+  // likely way this gets opened) often garbles the ₹ symbol into mojibake
+  // even though the file itself is valid UTF-8. This has nothing to do
+  // with the PDF's font issue above; it's a separate, well-known Excel
+  // quirk that's worth heading off the same way while in here.
+  const csvWithBom = '\uFEFF' + csv;
+  const fileSafeLabel = (to ? `${from}_to_${to}` : 'all-time').replace(/\s+/g,'');
+  const blob = new Blob([csvWithBom], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `${d.name.replace(/\s+/g,'_')}_${month||'all-time'}_report.csv`;
+  a.href = url; a.download = `${d.name.replace(/\s+/g,'_')}_${fileSafeLabel}_report.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
